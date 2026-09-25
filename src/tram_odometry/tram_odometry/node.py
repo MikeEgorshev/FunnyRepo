@@ -111,7 +111,7 @@ class TramOdometryNode(Node):
         v.velocity = float(out['v'])
         o = Odometry()
         o.header.stamp = stamp
-        o.header.frame_id = self.map_frame
+        o.header.frame_id = self.map_frame if out['frame'] == 'map' else 'odom'
         o.child_frame_id = self.base_frame
         o.pose.pose.position.x = float(out['x'])
         o.pose.pose.position.y = float(out['y'])

@@ -92,6 +92,24 @@ def test_starts_on_the_move():
     assert abs(out['v'] - 8.0) < 0.1
 
 
+def test_relative_odometry_without_gnss():
+    p = Params()
+    p.wheel_kmh_per_mps = K
+    est = TramEstimator(straight_map(), flat_model(), [], p)  # GNSS так и не придёт
+    out = drive(est, 20.0, lambda t: 0.5 * t)
+    assert out['frame'] == 'odom' and out['y'] == 0.0
+    assert abs(out['x'] - (0.25 * 20 ** 2 - 0.25 * 5 ** 2)) < 3.0  # путь с момента перехода в режим
+
+
+def test_gnss_jump_during_init_is_ignored():
+    est = make()
+    enu = Enu(*ORIGIN)
+    for i, x in enumerate([100.0, 100.2, 99.9, 160.0, 100.1]):  # одна точка прыгнула на 60 м
+        la, lo, al = enu.inverse(x, 0.0, 0.0)
+        est.on_gnss(0.1 * (i + 1), la, lo, al)
+    assert abs(est.s - 100.0) < 1.0
+
+
 def test_garbage_inputs_do_not_crash():
     est = make()
     for i, z in enumerate([float('nan'), -5.0, 1e6, 0.0, 30.0]):

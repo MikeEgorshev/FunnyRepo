@@ -49,6 +49,8 @@ class Params:
     #   output_origin: 'frame' — как в рамке; 'start' — вычесть положение выходной точки на старте
     #   output_lever_m / output_dz_m — от антенны master до base_link: +9.873 м вперёд по пути,
     #   −3.0 м по высоте (tf антенн от организаторов)
+    init_still_m = 3.0           # разброс точек GNSS меньше — стоим, берём медиану
+    init_jump_m = 10.0           # точка дальше медианы — прыжок GNSS, если трамвай стоит
     output_frame = 'utm_local'
     output_origin = 'frame'
     output_lever_m = 9.873
@@ -81,6 +83,9 @@ class TramEstimator:
         self.slip = False
         self.last_out = None
         self.origin = None                # положение выходной точки на старте (output_origin='start')
+        self.init_fixes = []              # точки GNSS окна выставки в системе выхода
+        self.first_input = None           # метка первого входа (для режима без GNSS)
+        self.mode = None                  # None — по карте; 'relative' — GNSS на старте не было
 
     # --- входы -----------------------------------------------------------------------------
     def on_gnss(self, stamp, lat, lon, alt):
@@ -90,11 +95,22 @@ class TramEstimator:
             self.enu = UtmLocal() if self.p.output_frame == 'utm_local' else Enu(lat, lon, alt)
             self.map.to_frame(self.enu)
             self.t0_gnss = stamp
-        if stamp - self.t0_gnss > self.p.init_window_s:
+        if stamp - self.t0_gnss > self.p.init_window_s or self.mode == 'relative':
             return None
         x, y, _ = self.enu.forward(lat, lon, alt)
         if self.first_xy is None:
             self.first_xy = (x, y)
+        # на старте трамвай обычно стоит: медиана точек устойчива к прыжкам GNSS;
+        # если едем (точки расходятся), берём свежую точку
+        self.init_fixes.append((x, y))
+        mx = sorted(p[0] for p in self.init_fixes)[len(self.init_fixes) // 2]
+        my = sorted(p[1] for p in self.init_fixes)[len(self.init_fixes) // 2]
+        spread = max(math.hypot(p[0] - mx, p[1] - my) for p in self.init_fixes)
+        if spread < self.p.init_still_m:
+            x, y = mx, my
+        elif math.hypot(x - mx, y - my) > self.p.init_jump_m and len(self.init_fixes) > 2:
+            self.init_fixes.pop()
+            return None  # одиночный прыжок GNSS — пропускаем
         dx, dy = x - self.first_xy[0], y - self.first_xy[1]
         yaw = math.atan2(dy, dx) if math.hypot(dx, dy) > 3.0 else None
         self._advance(stamp)
@@ -113,7 +129,15 @@ class TramEstimator:
         self.model.push_command(stamp, position)
         if not self._advance(stamp):
             return None
+        self._check_no_gnss(stamp)
         return self._output(stamp)
+
+    def _check_no_gnss(self, stamp):
+        """GNSS на старте так и не пришёл — относительная одометрия от старта (просили на QA)."""
+        if self.first_input is None:
+            self.first_input = stamp
+        if self.enu is None and self.mode is None and stamp - self.first_input > self.p.init_window_s:
+            self.mode, self.ready, self.s, self.d_since_fix = 'relative', True, 0.0, 0.0
 
     def on_wheel(self, stamp, front, kmh):
         if not (math.isfinite(stamp) and math.isfinite(kmh)) or not self.p.wheel_min_kmh <= kmh <= self.p.wheel_max_kmh:
@@ -121,6 +145,7 @@ class TramEstimator:
             return None
         if not self._advance(stamp):
             return None
+        self._check_no_gnss(stamp)
         # зависание датчика: одно и то же ненулевое значение много раз подряд (в живых данных — 2–3)
         last, count = self.repeat[front]
         count = count + 1 if kmh == last and kmh > self.p.stuck_min_kmh else 1
@@ -246,7 +271,7 @@ class TramEstimator:
             self._snap()
 
     def _snap(self):
-        if not self.ready or not self.stops:
+        if not self.ready or not self.stops or self.mode == 'relative':
             return
         sp = self.map.active_spur
         if sp is not None and self.s < sp['s_join']:
@@ -278,16 +303,21 @@ class TramEstimator:
         if not self.ready or (self.last_out is not None and stamp < self.last_out):
             return None
         self.last_out = stamp
-        x, y, z, yaw = self.map.pose(self.s + self.p.output_lever_m)
-        z += self.p.output_dz_m
-        if self.p.output_origin == 'start':
+        frame = 'map'
+        if self.mode == 'relative':  # без GNSS: пройденный путь по оси x от старта
+            x, y, z, yaw, frame = self.s, 0.0, 0.0, 0.0, 'odom'
+        else:
+            x, y, z, yaw = self.map.pose(self.s + self.p.output_lever_m)
+            z += self.p.output_dz_m
+        if self.p.output_origin == 'start' and self.mode != 'relative':
             if self.origin is None:
                 self.origin = (x, y, z)
             x, y, z = x - self.origin[0], y - self.origin[1], z - self.origin[2]
         dropout = all(w is None or stamp - w[0] > 0.5 for w in self.last_wheel.values())
         return {'stamp': stamp, 'v': self.v, 'x': x, 'y': y, 'z': z, 'yaw': yaw, 's': self.s,
                 'var_v': self.P[1][1], 'var_s': self.P[0][0] + (self.p.rel_scale_err * self.d_since_fix) ** 2,
-                'slip': self.slip, 'dropout': dropout, 'stuck': any(self.stuck.values()), 'scale': self.scale}
+                'slip': self.slip, 'dropout': dropout, 'stuck': any(self.stuck.values()), 'scale': self.scale,
+                'frame': frame}
 
 
 def _mul(A, B):
