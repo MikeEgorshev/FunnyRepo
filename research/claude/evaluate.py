@@ -19,11 +19,11 @@ from pathlib import Path
 
 import numpy as np
 
-from bagio import CMD, FRONT, GNSS_FIX, GNSS_VEL, REAR, REPO, bag_ids, load_cached
+from bagio import CMD, FRONT, GNSS_FIX, GNSS_VEL, MAP_DIR, REAR, bag_ids, load_cached
 from tram_odometry.geo import Enu
 
 OUT = Path(__file__).parent / 'out'
-MAP = REPO / 'src' / 'tram_odometry' / 'maps' / 'route.csv'
+MAP = MAP_DIR / 'route.csv'
 MATCH_TOL = 0.05
 MIN_DURATION_S = 60.0
 
@@ -130,12 +130,13 @@ def main():
     ap.add_argument('--estimator', default='baseline')
     ap.add_argument('--per-vehicle', action='store_true', help='коэффициент колеса по номеру трамвая')
     ap.add_argument('--bags', type=int, default=0, help='только первые N прогонов (для отладки)')
+    ap.add_argument('--tag', default='', help='суффикс имени файла результатов')
     a = ap.parse_args()
     ids = bag_ids()[:a.bags] if a.bags else bag_ids()
     with ProcessPoolExecutor(10) as ex:
         rows = [r for r in ex.map(evaluate_bag, [(b, a.estimator, a.per_vehicle) for b in ids]) if r]
     OUT.mkdir(exist_ok=True)
-    name = a.estimator + ('_pv' if a.per_vehicle else '')
+    name = a.estimator + ('_pv' if a.per_vehicle else '') + (f'_{a.tag}' if a.tag else '')
     keys = list(dict.fromkeys(k for r in rows for k in r))
     with open(OUT / f'eval_{name}.csv', 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=keys)

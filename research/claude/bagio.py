@@ -26,6 +26,8 @@ DATASET = _find_dataset()
 # модули пакета (geo, route_map) — чистый Python, их используют и скрипты исследований
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'src' / 'tram_odometry'))
+# карта и отводы; для кросс-валидации — другая папка через TRAM_MAP_DIR
+MAP_DIR = Path(os.environ.get('TRAM_MAP_DIR', REPO / 'src' / 'tram_odometry' / 'maps'))
 BAGS = DATASET / 'data'
 MSGS = DATASET / 'tram_vehicle_msgs' / 'msg'
 
@@ -76,6 +78,9 @@ def load(bag_id, topics=None):
 
 
 def bag_ids():
+    """Все прогоны или список из файла TRAM_BAGS (по id на строку) — для кросс-валидации."""
+    if 'TRAM_BAGS' in os.environ:
+        return sorted(Path(os.environ['TRAM_BAGS']).read_text(encoding='utf-8').split())
     return sorted(p.name for p in BAGS.iterdir() if p.is_dir())
 
 

@@ -13,11 +13,11 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from scipy.spatial import cKDTree
 
-from bagio import GNSS_FIX, GNSS_VEL, REPO, bag_ids, load_cached
+from bagio import GNSS_FIX, GNSS_VEL, MAP_DIR, bag_ids, load_cached
 from tram_odometry.geo import Enu
 from tram_odometry.route_map import RouteMap
 
-MAP = REPO / 'src' / 'tram_odometry' / 'maps' / 'route.csv'
+MAP = MAP_DIR / 'route.csv'
 ENU = Enu(55.80, 37.42, 150.0)
 BIN_M = 20.0
 MAX_OFF_MAP = 3.0
@@ -112,7 +112,6 @@ def main():
         f.write('s_m,lat,lon,alt\n')
         for q in range(len(s_geo)):
             f.write(f'{s_cal[q]:.2f},{m.lat[q]:.8f},{m.lon[q]:.8f},{m.alt[q]:.2f}\n')
-    np.save(REPO / 'research' / 'claude' / 'out' / 'route_s_ratio.npy', ratio)
 
 
 if __name__ == '__main__':

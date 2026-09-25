@@ -16,10 +16,10 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from scipy.spatial import cKDTree
 
-from bagio import FRONT, GNSS_FIX, REAR, REPO, bag_ids, load_cached
+from bagio import FRONT, GNSS_FIX, MAP_DIR, REAR, bag_ids, load_cached
 from calibrate_route_s import ENU, load_map, project
 
-OUT = REPO / 'src' / 'tram_odometry' / 'maps' / 'route_spurs.csv'
+OUT = MAP_DIR / 'route_spurs.csv'
 KMH_PER_MPS = 3.5966
 OFF_MAP_START = 3.0
 ON_MAP = 2.0

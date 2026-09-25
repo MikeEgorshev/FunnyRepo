@@ -13,14 +13,14 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from scipy.spatial import cKDTree
 
-from bagio import GNSS_FIX, REPO, bag_ids, load_cached
+from bagio import GNSS_FIX, MAP_DIR, bag_ids, load_cached
 from tram_odometry.geo import Enu
 
 MAP_ORIGIN = (55.80, 37.42, 150.0)
 TEMPLATE_EW = '30639_0be558e2'  # старт у восточной остановки, конец в глубине западной петли
 TEMPLATE_WE = '30618_21dd3af3'  # старт в западной петле, конец у восточной остановки
 STEP = 1.0
-OUT = REPO / 'src' / 'tram_odometry' / 'maps' / 'route.csv'
+OUT = MAP_DIR / 'route.csv'
 ENU = Enu(*MAP_ORIGIN)
 
 
@@ -79,9 +79,23 @@ def smooth_closed(v, w):
     return np.convolve(np.r_[v[-w:], v, v[:w]], k, mode='valid')
 
 
+def pick_template(tracks, start, end):
+    """Прогон, который начинается ближе всего к start и кончается ближе всего к end."""
+    best = min(((math.hypot(*(p[0, :2] - start)) + math.hypot(*(p[-1, :2] - end)), b) for b, (p, _) in tracks))
+    return best[1]
+
+
 def main():
-    ew = resample(decimate(enu_track(TEMPLATE_EW)[0]))
-    we = resample(decimate(enu_track(TEMPLATE_WE)[0]))
+    ids = bag_ids()
+    with ProcessPoolExecutor(10) as ex:
+        tracks = [(b, t) for b, t in zip(ids, ex.map(enu_track, ids)) if t is not None]
+    by_id = dict(tracks)
+    # опорные поездки — только из прогонов, по которым строим карту (важно для кросс-валидации)
+    t_ew = TEMPLATE_EW if TEMPLATE_EW in by_id else pick_template(tracks, (2652, 1159), (-1959, -86))
+    t_we = TEMPLATE_WE if TEMPLATE_WE in by_id else pick_template(tracks, (-1955, -87), (2647, 1151))
+    print(f'опорные поездки: {t_ew}, {t_we}')
+    ew = resample(decimate(by_id[t_ew][0]))
+    we = resample(decimate(by_id[t_we][0]))
     n = int(30 / STEP)  # стыкуем конец к началу: в больших окнах треки пересекаются до петли
     i, j, d_west = closest_pair(ew[-n:], we[:n])
     i += len(ew) - n
@@ -90,10 +104,8 @@ def main():
     circuit = resample(np.vstack([ew[m:i + 1], we[j:k + 1], ew[m:m + 1]]))
     print(f'стыки опорных поездок: запад {d_west:.2f} м, восток {d_east:.2f} м; длина {len(circuit) * STEP:.0f} м')
 
-    with ProcessPoolExecutor(10) as ex:
-        tracks = [t for t in ex.map(enu_track, bag_ids()) if t is not None]
     pts, hdg = [], []
-    for p, t in tracks:
+    for _, (p, t) in tracks:
         if len(p) < 3:
             continue
         v = np.r_[0.0, np.hypot(*np.diff(p[:, :2], axis=0).T) / np.maximum(np.diff(t), 1e-3)]
