@@ -3,8 +3,10 @@ d — возмущающее ускорение, м/с² (масса, уклон
 (км/ч по тележке) / (м/с).
 
 Прогноз — по модели тяги и торможения (model.py). Измерение — скорость тележки в км/ч,
-h(x) = k·v. По колёсам k и v неразделимы, поэтому колёса k не двигают
-(k — «учитываемый» параметр фильтра Шмидта); k уточняют только абсолютные привязки дистанции.
+h(x) = k·v. По колёсам k и v неразделимы, поэтому в обновлении по колёсам k считается
+известным. k уточняется отдельно, по привязкам дистанции: расстояние между двумя
+привязками по карте против пути по одометрии. Неопределённость k входит в σ_s как член,
+растущий с путём после последней привязки.
 Подозрительные отсчёты отсекаются проверкой χ²; если отсекаем дольше
 reject_max_s, отсчёты снова принимаются, но с большим шумом — фильтр не «залипает» на модели.
 Стоянка (обе тележки около нуля, нет тяги) — измерение v = 0.
@@ -24,7 +26,7 @@ S, V, D, K = range(N)
 @dataclass(frozen=True)
 class FilterParams:
     k0: float = 3.5966          # начальный масштаб колёс
-    sigma_k0: float = 0.01      # его неопределённость
+    sigma_k0: float = 0.02      # его неопределённость: 0,56 %, реальные ошибки k до 1,4 % укладываются в 3σ
     sigma_v0: float = 0.5       # м/с
     q_accel: float = 0.15       # м/с², шум ускорения модели
     q_d: float = 0.02           # м/с² за √с, блуждание возмущения
@@ -41,6 +43,8 @@ class FilterParams:
     max_gap_s: float = 120.0    # с, больший скачок времени вперёд — сброс (новый прогон)
     reset_back_s: float = 1.0   # с, скачок времени назад больше — сброс (новый прогон)
     max_lag_s: float = 0.25     # с, отсчёт старее текущего времени — отбрасывается
+    k_min_dist_m: float = 200.0  # м, короче между привязками — k не уточняем
+    k_max_rel: float = 0.03     # k не уходит от k0 дальше этой доли
 
 
 @dataclass
@@ -98,6 +102,8 @@ class Estimator:
         self._reject_since = None
         self._rejects = 0
         self._need_v = True           # первую скорость берём с колёс: прогон может начаться на ходу
+        self.odo = 0.0                # путь по одометрии после последней привязки, м
+        self._last_fix = None         # (s, sigma) последней привязки
         self.detector.reset()
 
     def reset(self, t=None):
@@ -144,7 +150,9 @@ class Estimator:
         if v_new < 0.0:                   # трамвай не едет назад: останавливается
             a = -x[V] / dt if dt > 0 else 0.0
             v_new = 0.0
-        x[S] += x[V] * dt + 0.5 * a * dt * dt
+        ds = x[V] * dt + 0.5 * a * dt * dt
+        x[S] += ds
+        self.odo += ds
         x[V] = v_new
         dadv = accel_dv(self.notch, x[V], m, grade)
         F = [[1.0, dt, 0.5 * dt * dt, 0.0],
@@ -220,7 +228,7 @@ class Estimator:
             return
 
         z = z_mps * x[K]
-        H = [0.0, x[K], 0.0, x[V]]
+        H = [0.0, x[K], 0.0, 0.0]
         h = x[K] * x[V]
         rejected = self._nis(H, z, h, p.r_wheel ** 2) > p.gate
         if not rejected:
@@ -235,10 +243,32 @@ class Estimator:
                 self._update(H, z, h, p.r_recover ** 2, frozen=(K,))
         self.slip = self._rejects >= p.flag_after or self.flags.any
 
+    def _scale_var(self):
+        """Вклад неопределённости k в дисперсию s: ошибка масштаба растёт с путём."""
+        return (math.sqrt(self.P[K][K]) / self.x[K] * self.odo) ** 2
+
     def position_fix(self, t, s, sigma):
-        """Абсолютная привязка дистанции (например, стоянка у известной остановки)."""
-        if self._accept_time(t):
-            self._update([1.0, 0.0, 0.0, 0.0], s, self.x[S], sigma ** 2)
+        """Абсолютная привязка дистанции (например, стоянка у известной остановки).
+
+        Поправляет s и, если после прошлой привязки пройдено не меньше k_min_dist_m,
+        уточняет масштаб колёс: k_изм = k · (путь по одометрии) / (расстояние по карте).
+        """
+        if not self._accept_time(t):
+            return
+        p, x = self.p, self.x
+        self.P[S][S] += self._scale_var()
+        self._update([1.0, 0.0, 0.0, 0.0], s, x[S], sigma ** 2, frozen=(K,))
+        if self._last_fix is not None:
+            dist = s - self._last_fix[0]
+            if dist >= p.k_min_dist_m and self.odo > 0.0:
+                k_meas = x[K] * self.odo / dist
+                r = (x[K] * math.hypot(sigma, self._last_fix[1]) / dist) ** 2
+                gain = self.P[K][K] / (self.P[K][K] + r)
+                x[K] += gain * (k_meas - x[K])
+                x[K] = min(max(x[K], p.k0 * (1.0 - p.k_max_rel)), p.k0 * (1.0 + p.k_max_rel))
+                self.P[K][K] *= 1.0 - gain
+        self._last_fix = (s, sigma)
+        self.odo = 0.0
 
     # --- выход -------------------------------------------------------------------
 
@@ -262,7 +292,7 @@ class Estimator:
         return State(
             t=self.t if self.t is not None else 0.0,
             s=x[S], v=x[V], d=x[D], k=x[K],
-            var_s=max(self.P[S][S], 0.0), var_v=max(self.P[V][V], 0.0),
+            var_s=max(self.P[S][S], 0.0) + self._scale_var(), var_v=max(self.P[V][V], 0.0),
             accel=accel(self.notch, x[V], self.model, self.grade_at(x[S])) + x[D],
             slip=self.slip, flags=self.flags,
             wheels_ok=front is not None or rear is not None,

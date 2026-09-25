@@ -8,6 +8,7 @@ from tram_odometry.estimator import FilterParams
 from tram_odometry.model import ModelParams
 from tram_odometry.params import NODE_DEFAULTS
 from tram_odometry.slip import SlipParams
+from tram_odometry.stops import StopParams
 
 yaml = pytest.importorskip('yaml')
 CONFIG = Path(__file__).resolve().parents[1] / 'config' / 'tram_odometry.yaml'
@@ -24,7 +25,10 @@ def test_top_level_keys_and_types_match_defaults():
         assert type(value) is type(NODE_DEFAULTS[key]), key
 
 
-@pytest.mark.parametrize('section, cls', [('model', ModelParams), ('filter', FilterParams), ('slip', SlipParams)])
+SECTIONS = [('model', ModelParams), ('filter', FilterParams), ('slip', SlipParams), ('stops', StopParams)]
+
+
+@pytest.mark.parametrize('section, cls', SECTIONS)
 def test_sections_match_dataclasses(section, cls):
     cfg = _params()[section]
     defaults = {f.name: f.default for f in fields(cls)}

@@ -36,7 +36,7 @@ tram_odometry:
 
     filter:
       k0: 3.5966                   # (км/ч по тележке) / (м/с): 30618 — 3.5953, 30639 — 3.6106
-      sigma_k0: 0.01
+      sigma_k0: 0.02
       sigma_v0: 0.5
       q_accel: 0.15
       q_d: 0.02
@@ -53,6 +53,17 @@ tram_odometry:
       max_gap_s: 120.0
       reset_back_s: 1.0
       max_lag_s: 0.25
+      k_min_dist_m: 200.0          # м между привязками, чтобы уточнять k
+      k_max_rel: 0.03              # k не уходит от k0 дальше 3 %
+
+    stops:
+      dwell_s: 5.0                 # с, стоянка короче — привязки нет
+      stop_speed: 0.1
+      moving_speed: 0.5
+      gate_sigma: 3.0
+      gate_min_m: 5.0
+      gate_max_m: 80.0
+      min_sigma_m: 1.0
 
     slip:
       consistency_abs: 0.3         # м/с

@@ -19,6 +19,7 @@ from tram_odometry.model import ModelParams
 from tram_odometry.outputs import StampClock, pose_covariance, twist_covariance, yaw_to_quaternion
 from tram_odometry.params import NODE_DEFAULTS
 from tram_odometry.slip import SlipParams
+from tram_odometry.stops import StopFixer, StopParams
 from tram_odometry.track import GnssInit
 
 
@@ -48,6 +49,7 @@ class TramOdometryNode(Node):
         self.est = Estimator(model=_dataclass_params(self, 'model', ModelParams),
                              params=_dataclass_params(self, 'filter', FilterParams),
                              slip=_dataclass_params(self, 'slip', SlipParams))
+        self.stop_params = _dataclass_params(self, 'stops', StopParams)
         self.clock_out = StampClock(self.cfg['max_extrapolation_s'])
         self._start_run()
 
@@ -73,9 +75,16 @@ class TramOdometryNode(Node):
     def _start_run(self):
         """Новый прогон: новая выставка по GNSS и новые часы выхода."""
         self.init = GnssInit(self.cfg['gnss_init_window_s'], self.cfg['gnss_min_move_m'])
-        self.track = self.init.track(self.cfg['initial_yaw'])
+        self._set_track(self.init.track(self.cfg['initial_yaw']))
         self.clock_out.reset()
         self.resets_seen = self.est.resets
+
+    def _set_track(self, track):
+        """Путь даёт координаты; если у него есть уклон и стоянки — фильтр их использует."""
+        self.track = track
+        self.est.grade_at = getattr(track, 'grade_at', None) or (lambda s: 0.0)
+        stops = getattr(track, 'stops', None)
+        self.stops = StopFixer(stops, getattr(track, 'length', None), self.stop_params) if stops else None
 
     def _input(self, t):
         if self.est.resets != self.resets_seen:
@@ -83,7 +92,7 @@ class TramOdometryNode(Node):
         self.init.start(t)
         self.clock_out.input(t, self._now())
         if not self.init.done and self.init.expired(t):
-            self.track = self.init.track(self.cfg['initial_yaw'])
+            self._set_track(self.init.track(self.cfg['initial_yaw']))
             self.get_logger().info(
                 f'GNSS alignment done: heading {"known" if self.init.heading_known else "unknown"}, '
                 f'yaw {math.degrees(self.track.yaw):.1f} deg')
@@ -92,6 +101,8 @@ class TramOdometryNode(Node):
         t = _stamp(msg, self._now())
         self.est.wheel(which, t, float(msg.velocity))
         self._input(t)
+        if self.stops is not None:
+            self.stops.update(t, self.est)
 
     def _cmd(self, msg):
         t = _stamp(msg, self._now())
@@ -105,7 +116,7 @@ class TramOdometryNode(Node):
         self.init.start(t)
         self.init.fix(t, msg.latitude, msg.longitude, msg.altitude, msg.status.status)
         if self.init.frame is not None:
-            self.track = self.init.track(self.cfg['initial_yaw'])
+            self._set_track(self.init.track(self.cfg['initial_yaw']))
 
     # --- выходы ----------------------------------------------------------------
 
@@ -157,6 +168,7 @@ class TramOdometryNode(Node):
             'wheel_scale_k': round(st.k, 5), 'disturbance_accel': round(st.d, 4),
             'sigma_s_m': round(math.sqrt(st.var_s), 3), 's_m': round(st.s, 2),
             'gnss_heading_known': self.init.heading_known, 'resets': self.est.resets,
+            'stop_fixes': self.stops.fixes if self.stops else 0,
         }
         status.values = [KeyValue(key=k, value=str(v)) for k, v in values.items()]
         msg = DiagnosticArray()
