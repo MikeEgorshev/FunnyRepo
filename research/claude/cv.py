@@ -3,7 +3,7 @@
 Одинаковые прогоны (в датасете есть точные дубликаты) попадают в одну половину, иначе утечка.
 Карты складываются в dataset/cv/fold<k>/ (вне репозитория).
 
-Запуск: python cv.py [--per-vehicle]  ->  out/eval_baseline[_pv]_cv.csv и сводка
+Запуск: python cv.py [--estimator baseline|mapstops] [--per-vehicle]  ->  out/eval_<оценщик>_cvfold*.csv и сводка
 """
 import argparse
 import csv
@@ -34,6 +34,7 @@ def run(script, env, *args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--per-vehicle', action='store_true')
+    ap.add_argument('--estimator', default='baseline')
     a = ap.parse_args()
     groups = {}
     for b in bag_ids():
@@ -51,12 +52,12 @@ def main():
         (cvdir / 'test.txt').write_text('\n'.join(test), encoding='utf-8')
         env = dict(os.environ, TRAM_MAP_DIR=str(cvdir), TRAM_BAGS=str(cvdir / 'train.txt'),
                    KMP_DUPLICATE_LIB_OK='TRUE', PYTHONIOENCODING='utf-8')
-        for script in ('build_route_map.py', 'calibrate_route_s.py', 'build_spurs.py'):
+        for script in ('build_route_map.py', 'calibrate_route_s.py', 'build_spurs.py', 'build_stops.py'):
             run(script, env)
         env['TRAM_BAGS'] = str(cvdir / 'test.txt')
         tag = f'cvfold{k}'
-        run('evaluate.py', env, '--tag', tag, *(['--per-vehicle'] if a.per_vehicle else []))
-        name = 'baseline' + ('_pv' if a.per_vehicle else '') + f'_{tag}'
+        run('evaluate.py', env, '--estimator', a.estimator, '--tag', tag, *(['--per-vehicle'] if a.per_vehicle else []))
+        name = a.estimator + ('_pv' if a.per_vehicle else '') + f'_{tag}'
         with open(HERE / 'out' / f'eval_{name}.csv', encoding='utf-8') as f:
             rows += list(csv.DictReader(f))
     good = [r for r in rows if r.get('v_rmse')]

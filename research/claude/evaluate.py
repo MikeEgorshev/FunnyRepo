@@ -33,6 +33,9 @@ def make_estimator(name, bag_id, per_vehicle):
     if name == 'baseline':
         from baseline import BaselineEstimator
         return BaselineEstimator(MAP, vehicle_id=vehicle)
+    if name == 'mapstops':
+        from map_estimator import MapStopsEstimator
+        return MapStopsEstimator(MAP, vehicle_id=vehicle)
     raise ValueError(f'неизвестный оценщик {name}')
 
 
