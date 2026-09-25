@@ -13,7 +13,7 @@
 """
 import math
 
-from .geo import Enu
+from .geo import Enu, UtmLocal
 
 
 class Params:
@@ -24,6 +24,8 @@ class Params:
     d_max = 0.5                  # ограничение |d|, м/с²
     wheel_min_kmh = -2.0         # правдоподобный диапазон скорости тележки, км/ч
     wheel_max_kmh = 120.0
+    stuck_n = 6                  # столько одинаковых ненулевых показаний подряд — датчик завис
+    stuck_min_kmh = 1.0          # на стоянке нули законно повторяются
     sigma_wheel = 0.05           # шум скорости тележки, м/с
     sigma_wheel_rel = 0.01       # и относительный, доля скорости
     gate_chi2 = 9.0              # порог невязки (3σ)
@@ -41,6 +43,16 @@ class Params:
     scale_adapt = 0.0            # подстройка масштаба по привязкам (0 — выкл.: невязки привязок шумные)
     scale_adapt_min_m = 300.0
     scale_max = 0.02
+    # система координат выхода. Судья сравнивает с /localization/kinematic_state (QA 25.09):
+    # base_link в сетке MGRS = UTM 37N минус (300000, 6100000) — как pathgraph организаторов.
+    #   output_frame: 'utm_local' — сетка MGRS/pathgraph; 'enu' — ENU с началом в первой точке GNSS
+    #   output_origin: 'frame' — как в рамке; 'start' — вычесть положение выходной точки на старте
+    #   output_lever_m / output_dz_m — от антенны master до base_link: +9.873 м вперёд по пути,
+    #   −3.0 м по высоте (tf антенн от организаторов)
+    output_frame = 'utm_local'
+    output_origin = 'frame'
+    output_lever_m = 9.873
+    output_dz_m = -3.0
 
 
 class TramEstimator:
@@ -57,6 +69,8 @@ class TramEstimator:
         self.P = [[25.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.01]]
         self.ready = False
         self.last_wheel = {True: None, False: None}
+        self.repeat = {True: (None, 0), False: (None, 0)}   # (последнее значение, повторов подряд)
+        self.stuck = {True: False, False: False}
         self.v_init = False
         self.reject_since = None
         self.stop_since = None
@@ -66,13 +80,14 @@ class TramEstimator:
         self.scale = 0.0                  # поправка масштаба колёс: v = z · (1 + scale)
         self.slip = False
         self.last_out = None
+        self.origin = None                # положение выходной точки на старте (output_origin='start')
 
     # --- входы -----------------------------------------------------------------------------
     def on_gnss(self, stamp, lat, lon, alt):
         if not all(math.isfinite(x) for x in (stamp, lat, lon, alt)):
             return None
         if self.enu is None:
-            self.enu = Enu(lat, lon, alt)
+            self.enu = UtmLocal() if self.p.output_frame == 'utm_local' else Enu(lat, lon, alt)
             self.map.to_frame(self.enu)
             self.t0_gnss = stamp
         if stamp - self.t0_gnss > self.p.init_window_s:
@@ -106,9 +121,18 @@ class TramEstimator:
             return None
         if not self._advance(stamp):
             return None
+        # зависание датчика: одно и то же ненулевое значение много раз подряд (в живых данных — 2–3)
+        last, count = self.repeat[front]
+        count = count + 1 if kmh == last and kmh > self.p.stuck_min_kmh else 1
+        self.repeat[front] = (kmh, count)
+        self.stuck[front] = count >= self.p.stuck_n
+        self.slip = False
+        if self.stuck[front]:
+            self.last_wheel[front] = None
+            self._stop_logic(stamp)
+            return self._output(stamp)
         z = kmh / self.p.wheel_kmh_per_mps * (1.0 + self.scale)
         self.last_wheel[front] = (stamp, z)
-        self.slip = False
         if self._wheel_trusted(front, stamp, z):
             self._speed_update(stamp, z)
         self._stop_logic(stamp)
@@ -254,11 +278,16 @@ class TramEstimator:
         if not self.ready or (self.last_out is not None and stamp < self.last_out):
             return None
         self.last_out = stamp
-        x, y, z, yaw = self.map.pose(self.s)
+        x, y, z, yaw = self.map.pose(self.s + self.p.output_lever_m)
+        z += self.p.output_dz_m
+        if self.p.output_origin == 'start':
+            if self.origin is None:
+                self.origin = (x, y, z)
+            x, y, z = x - self.origin[0], y - self.origin[1], z - self.origin[2]
         dropout = all(w is None or stamp - w[0] > 0.5 for w in self.last_wheel.values())
         return {'stamp': stamp, 'v': self.v, 'x': x, 'y': y, 'z': z, 'yaw': yaw, 's': self.s,
                 'var_v': self.P[1][1], 'var_s': self.P[0][0] + (self.p.rel_scale_err * self.d_since_fix) ** 2,
-                'slip': self.slip, 'dropout': dropout, 'scale': self.scale}
+                'slip': self.slip, 'dropout': dropout, 'stuck': any(self.stuck.values()), 'scale': self.scale}
 
 
 def _mul(A, B):

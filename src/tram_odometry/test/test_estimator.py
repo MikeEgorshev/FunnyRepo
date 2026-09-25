@@ -78,6 +78,14 @@ def test_survives_full_wheel_dropout_on_model():
     assert abs(out['s'] - 200.0) < 5.0
 
 
+def test_ignores_frozen_rear_sensor():
+    est = make()
+    frozen = lambda t, v: 5.0 if 6.0 < t < 16.0 else v  # noqa: E731 — задний датчик застыл на 5 м/с
+    out = drive(est, 20.0, lambda t: 0.5 * t, rear=frozen)
+    assert abs(out['v'] - 10.0) < 0.15
+    assert abs(out['s'] - 200.0) < 3.0
+
+
 def test_starts_on_the_move():
     est = make()
     out = drive(est, 10.0, lambda t: 8.0, u=0)  # уже едем 8 м/с, выбег

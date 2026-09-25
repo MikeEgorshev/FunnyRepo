@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from bagio import CMD, FRONT, GNSS_FIX, GNSS_VEL, MAP_DIR, REAR, bag_ids, load_cached
-from tram_odometry.geo import Enu
+from tram_odometry.geo import UtmLocal
 
 OUT = Path(__file__).parent / 'out'
 MAP = MAP_DIR / 'route.csv'
@@ -43,6 +43,7 @@ class EkfAdapter:
         stops = load_stops(MAP_DIR / 'route_stops.csv') if (MAP_DIR / 'route_stops.csv').exists() else []
         p = Params()
         p.wheel_kmh_per_mps = KMH_PER_MPS.get(vehicle, KMH_PER_MPS['default'])
+        p.output_frame, p.output_lever_m, p.output_dz_m = 'utm_local', -MASTER_X, -ANT_Z
         self.est = TramEstimator(m, TractionModel.load(TRACTION), stops, p)
         self.map = m
 
@@ -96,11 +97,36 @@ def replay(est, d):
     return np.array(out) if out else np.zeros((0, 6))
 
 
+MASTER_X, ROVER_X, ANT_Z = -9.873, 2.563, 3.0  # tf антенн в base_link от организаторов
+
+
 def reference(d):
+    """Эталон как у судьи: base_link в сетке MGRS (UTM 37N минус 300000/6100000), высота рельса.
+
+    base_link лежит на оси между антеннами master (x = -9.873) и rover (x = +2.563), на 3 м ниже.
+    Нет rover — сдвиг от master на 9.873 м по направлению движения.
+    """
     fix = d[GNSS_FIX['master']]
-    enu = Enu(*fix[0, 2:5])
-    p = np.array([enu.forward(la, lo, al) for la, lo, al in fix[:, 2:5]])
+    grid = UtmLocal()
+    p = np.array([grid.forward(la, lo, al) for la, lo, al in fix[:, 2:5]])
     t = fix[:, 1]
+    rover = d.get(GNSS_FIX['rover'])
+    w = -MASTER_X / (ROVER_X - MASTER_X)
+    if rover is not None and len(rover) > 10:
+        pr = np.array([grid.forward(la, lo, al) for la, lo, al in rover[:, 2:5]])
+        near = np.abs(np.interp(t, rover[:, 1], rover[:, 1]) - t) < 0.2
+        pri = np.column_stack([np.interp(t, rover[:, 1], pr[:, k]) for k in range(3)])
+        axis = pri[:, :2] - p[:, :2]
+        ok = near & (np.abs(np.hypot(*axis.T) - (ROVER_X - MASTER_X)) < 1.5)
+    else:
+        ok = np.zeros(len(t), bool)
+        pri = p
+    tang = np.gradient(p[:, :2], axis=0)
+    tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+    base = p.copy()
+    base[:, :2] = np.where(ok[:, None], p[:, :2] + w * (pri[:, :2] - p[:, :2]), p[:, :2] - MASTER_X * tang)
+    base[:, 2] = np.where(ok, p[:, 2] + w * (pri[:, 2] - p[:, 2]), p[:, 2]) - ANT_Z
+    p = base
     keep = [0]
     for i in range(1, len(p)):
         if math.hypot(*(p[i, :2] - p[keep[-1], :2])) / max(t[i] - t[keep[-1]], 1e-3) < 25.0:

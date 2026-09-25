@@ -12,5 +12,11 @@ tram_odometry:
     bogie_tol_abs: 0.3           # допустимое расхождение тележек, м/с
     bogie_tol_rel: 0.05
     stop_confirm_s: 2.0          # стоянка дольше — привязка к месту регулярной стоянки
+    # выход как у эталона /localization/kinematic_state: base_link в сетке MGRS
+    # (UTM 37N минус 300000/6100000, как pathgraph организаторов)
+    output_frame: utm_local
+    output_origin: frame
+    output_lever_m: 9.873        # антенна master -> base_link вперёд по пути, м
+    output_dz_m: -3.0            # антенна на 3 м выше рельса
     map_frame: map
     base_frame: base_link

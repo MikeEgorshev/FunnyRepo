@@ -26,6 +26,34 @@ def from_ecef(x, y, z):
     return math.degrees(lat), math.degrees(lon), p / math.cos(lat) - n
 
 
+def utm_forward(lat, lon, zone=37):
+    """WGS-84 -> UTM (северное полушарие): (E, N), м. Ряды Крюгера, точность ~1 мм в пределах зоны."""
+    k0, n = 0.9996, F / (2 - F)
+    a_ = A / (1 + n) * (1 + n ** 2 / 4 + n ** 4 / 64)
+    alpha = (n / 2 - 2 * n ** 2 / 3 + 5 * n ** 3 / 16, 13 * n ** 2 / 48 - 3 * n ** 3 / 5, 61 * n ** 3 / 240)
+    phi, lam = math.radians(lat), math.radians(lon - (zone * 6 - 183))
+    e = math.sqrt(E2)
+    t = math.sinh(math.atanh(math.sin(phi)) - e * math.atanh(e * math.sin(phi)))
+    xi, eta = math.atan2(t, math.cos(lam)), math.atanh(math.sin(lam) / math.sqrt(1 + t * t))
+    x = eta + sum(al * math.cos(2 * j * xi) * math.sinh(2 * j * eta) for j, al in enumerate(alpha, 1))
+    y = xi + sum(al * math.sin(2 * j * xi) * math.cosh(2 * j * eta) for j, al in enumerate(alpha, 1))
+    return 500000.0 + k0 * a_ * x, k0 * a_ * y
+
+
+class UtmLocal:
+    """Сетка UTM со сдвигом начала — система pathgraph организаторов: UTM 37N минус (300000, 6100000).
+
+    Высота — как есть (эллипсоидальная высота GNSS). Интерфейс как у Enu: forward(lat, lon, alt).
+    """
+
+    def __init__(self, zone=37, false_e=300000.0, false_n=6100000.0):
+        self.zone, self.false_e, self.false_n = zone, false_e, false_n
+
+    def forward(self, lat, lon, alt):
+        e, n = utm_forward(lat, lon, self.zone)
+        return e - self.false_e, n - self.false_n, alt
+
+
 class Enu:
     """Локальная система East-North-Up с началом в (lat0, lon0, alt0)."""
 
