@@ -4,6 +4,7 @@
 dataset/ с подпапкой data/ выше по дереву от этого файла (см. data/README.md).
 """
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,10 @@ def _find_dataset():
 
 
 DATASET = _find_dataset()
+
+# модули пакета (geo, route_map) — чистый Python, их используют и скрипты исследований
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'src' / 'tram_odometry'))
 BAGS = DATASET / 'data'
 MSGS = DATASET / 'tram_vehicle_msgs' / 'msg'
 
