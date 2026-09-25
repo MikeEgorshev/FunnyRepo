@@ -1,0 +1,67 @@
+# ROS 2 / colcon
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# C/C++
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.exe
+compile_commands.json
+.cache/
+
+# Данные в git не храним — см. data/README.md
+data/*
+!data/README.md
+*.db3
+*.mcap
+*.bag
+rosbag2_*/
+
+# Записи созвонов — только ссылкой
+*.mp3
+*.m4a
+*.wav
+*.ogg
+*.mp4
+*.mkv
+*.webm
+
+# Секреты
+.env
+.env.*
+!.env.example
+*.pem
+
+# IDE и ОС
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Локальные файлы агентов
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
+.worktrees/
+.aider*

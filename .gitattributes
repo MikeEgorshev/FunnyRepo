@@ -1,0 +1,17 @@
+# Везде LF: код собирается и запускается в Linux (ROS 2 Humble, WSL, Docker),
+# а CRLF из Windows ломает shell-скрипты и shebang.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.db3 binary
+*.mcap binary
+*.bag binary
