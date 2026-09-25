@@ -1,0 +1,22 @@
+"""Параметры ноды верхнего уровня и их значения по умолчанию (без ROS, для тестов)."""
+
+NODE_DEFAULTS = {
+    'front_topic': '/vehicle/front_bogie_velocity',
+    'rear_topic': '/vehicle/rear_bogie_velocity',
+    'cmd_topic': '/vehicle/driver_position_cmd',
+    'gnss_topic': '/sensing/gnss/master/fix',
+    'velocity_topic': '/result/velocity',
+    'position_topic': '/result/position',
+    'diagnostics_topic': '/result/diagnostics',
+    'frame_id': 'map',
+    'child_frame_id': 'base_link',
+    'rate_hz': 25.0,
+    'diagnostics_hz': 2.0,
+    'max_extrapolation_s': 0.5,
+    'gnss_init_window_s': 5.0,
+    'gnss_min_move_m': 3.0,
+    'initial_yaw': 0.0,
+    'var_cross': 1.0,
+    'var_z': 4.0,
+    'var_yaw': 0.01,
+}
