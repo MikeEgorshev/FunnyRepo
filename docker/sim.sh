@@ -6,6 +6,7 @@ set -u
 BAG=$1
 OUT=$2
 RATE=${3:-1.0}
+[ -e "$BAG/metadata.yaml" ] || { echo "нет bag: $BAG" >&2; exit 2; }
 mkdir -p "$OUT"
 rm -rf "$OUT/result"
 export ROS_LOCALHOST_ONLY=1
@@ -25,6 +26,12 @@ REC=$!
 sleep 3
 ros2 bag play "$BAG" --rate "$RATE" > "$OUT/play.log" 2>&1
 sleep 2
-kill -INT "$REC"; wait "$REC" 2>/dev/null
-kill -INT "$LAUNCH"; wait "$LAUNCH" 2>/dev/null
+stop() {  # мягкая остановка, через 10 с — принудительная
+  kill -INT "$1" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.5; done
+  kill -KILL "$1" 2>/dev/null
+}
+stop "$REC"
+stop "$LAUNCH"
+pkill -f tram_odometry_node 2>/dev/null
 echo "готово: $OUT"
