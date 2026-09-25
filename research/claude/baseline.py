@@ -4,6 +4,7 @@
 настоящий фильтр (задача 5). Интерфейс тот же, что будет у estimator.py в пакете.
 """
 import math
+from pathlib import Path
 
 from tram_odometry.geo import Enu
 from tram_odometry.route_map import RouteMap
@@ -14,6 +15,9 @@ KMH_PER_MPS = {'default': 3.5966, '30618': 3.5953, '30639': 3.6106}
 class BaselineEstimator:
     def __init__(self, route_map_path, vehicle_id='default', init_window_s=5.0, wheel_fresh_s=0.5):
         self.map = RouteMap.load(route_map_path)
+        spurs = Path(route_map_path).with_name('route_spurs.csv')
+        if spurs.exists():
+            self.map.load_spurs(spurs)
         self.k = KMH_PER_MPS.get(vehicle_id, KMH_PER_MPS['default'])
         self.init_window_s = init_window_s
         self.wheel_fresh_s = wheel_fresh_s
@@ -39,7 +43,7 @@ class BaselineEstimator:
             self.first_xy = (x, y)
         dx, dy = x - self.first_xy[0], y - self.first_xy[1]
         yaw = math.atan2(dy, dx) if math.hypot(dx, dy) > 3.0 else None
-        self.s, _ = self.map.locate(x, y, yaw)
+        self.s, _ = self.map.locate_start(x, y, yaw)
         self.t = stamp
         return self._output(stamp)
 
