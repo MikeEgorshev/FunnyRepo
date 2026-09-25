@@ -1,8 +1,9 @@
 """ROS 2 нода резервной одометрии: входы /vehicle/*, выход /result/velocity и /result/position.
 
 Только ROS-обвязка: вся математика — в estimator.py (TramEstimator). На каждое входное сообщение
-публикуется оценка с header.stamp этого входа (так её сопоставляет судья). GNSS принимается
-только в окне выставки после первой точки.
+публикуется оценка с header.stamp этого входа (так её сопоставляет судья). Если все входы молчат
+дольше keepalive_s, публикуется прогноз по модели с меткой «последний вход + прошедшее время»:
+выход не реже 20 Гц даже при пропуске всех входов. GNSS принимается только в окне выставки после первой точки.
 """
 import math
 import os
@@ -10,6 +11,7 @@ import time
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
+from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -40,6 +42,8 @@ class TramOdometryNode(Node):
             'init_window_s': p.init_window_s,
             'map_frame': 'map',
             'base_frame': 'base_link',
+            'keepalive_s': 0.04,       # входы молчат дольше — публикуем прогноз по модели
+            'keepalive_max_s': 2.0,    # и не дальше этого от последнего входа
         }
         for name, default in declared.items():
             self.declare_parameter(name, default)
@@ -58,6 +62,9 @@ class TramOdometryNode(Node):
         model = TractionModel.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
         self.est = TramEstimator(route, model, stops, p)
         self.map_frame, self.base_frame = get('map_frame'), get('base_frame')
+        self.keepalive_s, self.keepalive_max_s = get('keepalive_s'), get('keepalive_max_s')
+        self.last_in = None          # (метка последнего входа, время его прихода по monotonic)
+        self.last_pub = None         # время последней публикации по monotonic
 
         qos_in = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(VelocitySensor, '/vehicle/front_bogie_velocity',
@@ -73,6 +80,7 @@ class TramOdometryNode(Node):
         self.last_diag = 0.0
         self.last_out = None
         self.create_timer(0.5, self._diagnostics)
+        self.create_timer(self.keepalive_s / 2, self._keepalive)
         self.get_logger().info(f'tram_odometry: k={p.wheel_kmh_per_mps:.4f}, карта {route.s[-1]:.0f} м, '
                                f'отводов {len(route.spurs)}, опорных стоянок {len(stops)}')
 
@@ -81,13 +89,32 @@ class TramOdometryNode(Node):
     def _stamp(msg):
         return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
+    def _input(self, stamp):
+        if self.last_in is None or stamp >= self.last_in[0]:
+            self.last_in = (stamp, time.monotonic())
+
     def _wheel(self, msg, front):
         t0 = time.perf_counter()
+        self._input(self._stamp(msg))
         self._publish(self.est.on_wheel(self._stamp(msg), front, msg.velocity), msg.header.stamp, t0)
 
     def _cmd(self, msg):
         t0 = time.perf_counter()
+        self._input(self._stamp(msg))
         self._publish(self.est.on_cmd(self._stamp(msg), msg.position), msg.header.stamp, t0)
+
+    def _keepalive(self):
+        """Входы молчат — публикуем прогноз, чтобы выход не замирал."""
+        if self.last_in is None or self.last_pub is None:
+            return
+        now = time.monotonic()
+        elapsed = now - self.last_in[1]
+        if now - self.last_pub < self.keepalive_s or elapsed > self.keepalive_max_s:
+            return
+        t = self.last_in[0] + elapsed
+        sec, nsec = divmod(int(round(t * 1e9)), 1000000000)
+        t0 = time.perf_counter()
+        self._publish(self.est.predict_output(t), Time(sec=sec, nanosec=nsec), t0)
 
     def _gnss(self, msg):
         if msg.status.status < 0 or math.isnan(msg.latitude):
@@ -134,6 +161,7 @@ class TramOdometryNode(Node):
         self.pub_v.publish(v)
         self.pub_p.publish(o)
         self.last_out = out
+        self.last_pub = time.monotonic()
         self.proc_ms.append((time.perf_counter() - t0) * 1e3)
 
     def _diagnostics(self):

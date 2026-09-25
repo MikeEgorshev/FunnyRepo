@@ -117,3 +117,15 @@ def test_garbage_inputs_do_not_crash():
         est.on_cmd(1.0 + i * 0.1, 99)
     out = est.on_wheel(2.0, False, 36.0)
     assert out is None or (math.isfinite(out['v']) and math.isfinite(out['x']))
+
+
+def test_predict_output_extrapolates_without_changing_the_filter():
+    est = make()
+    out = drive(est, 10.0, lambda t: 0.5 * t)
+    s, v, t, last = est.s, est.v, est.t, est.last_out
+    ahead = est.predict_output(t + 1.0)            # все входы молчат секунду
+    assert ahead is not None and ahead['stamp'] == t + 1.0
+    assert ahead['s'] > s + 0.9 * v                # прогноз едет дальше по модели
+    assert (est.s, est.v, est.t) == (s, v, t)      # сам фильтр не сдвинулся
+    assert est.predict_output(t - 0.5) is None     # назад не прогнозируем
+    assert out['stamp'] == last and est.last_out == t + 1.0
