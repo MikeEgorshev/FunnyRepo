@@ -24,8 +24,40 @@ from tram_odometry.geo import Enu
 
 OUT = Path(__file__).parent / 'out'
 MAP = MAP_DIR / 'route.csv'
+TRACTION = Path(__file__).resolve().parents[2] / 'src' / 'tram_odometry' / 'config' / 'traction_table.csv'
 MATCH_TOL = 0.05
 MIN_DURATION_S = 60.0
+
+
+class EkfAdapter:
+    """TramEstimator из пакета с интерфейсом оценщиков research (выход — кортеж)."""
+
+    def __init__(self, vehicle):
+        from baseline import KMH_PER_MPS
+        from tram_odometry.estimator import Params, TramEstimator, load_stops
+        from tram_odometry.model import TractionModel
+        from tram_odometry.route_map import RouteMap
+        m = RouteMap.load(MAP)
+        if (MAP_DIR / 'route_spurs.csv').exists():
+            m.load_spurs(MAP_DIR / 'route_spurs.csv')
+        stops = load_stops(MAP_DIR / 'route_stops.csv') if (MAP_DIR / 'route_stops.csv').exists() else []
+        p = Params()
+        p.wheel_kmh_per_mps = KMH_PER_MPS.get(vehicle, KMH_PER_MPS['default'])
+        self.est = TramEstimator(m, TractionModel.load(TRACTION), stops, p)
+        self.map = m
+
+    @staticmethod
+    def _t(r):
+        return None if r is None else (r['stamp'], r['v'], r['x'], r['y'], r['z'], r['s'])
+
+    def on_gnss(self, *a):
+        return self._t(self.est.on_gnss(*a))
+
+    def on_wheel(self, *a):
+        return self._t(self.est.on_wheel(*a))
+
+    def on_cmd(self, *a):
+        return self._t(self.est.on_cmd(*a))
 
 
 def make_estimator(name, bag_id, per_vehicle):
@@ -36,6 +68,8 @@ def make_estimator(name, bag_id, per_vehicle):
     if name == 'mapstops':
         from map_estimator import MapStopsEstimator
         return MapStopsEstimator(MAP, vehicle_id=vehicle)
+    if name == 'ekf':
+        return EkfAdapter(vehicle)
     raise ValueError(f'неизвестный оценщик {name}')
 
 
