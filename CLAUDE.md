@@ -8,7 +8,7 @@
 
 Пакет ROS 2 Humble оценивает продольную скорость и положение беспилотного трамвая без GNSS. В основном контуре разрешены только позиция ручки контроллера и скорости передней и задней тележек. GNSS — только выставка в первые секунды прогона, офлайн-калибровка и метрики. GNSS, IMU, лидар или камеры в контуре — дисквалификация.
 
-Судья проигрывает rosbag, собирает пакет `colcon build` без интернета и слушает `/result/velocity` и `/result/position` (`nav_msgs/msg/Odometry`). Материалы — в `docs/context/` (описание задачи, форма сдачи, открытие, QA 25.09). Контракт топиков и фреймов — `docs/interfaces.md`, меняется только отдельным PR через лида (AGENTS.md §7). Описание решения для формы сдачи — `docs/solution.md` (ветка `claude/submission-docs`).
+Судья проигрывает rosbag, собирает пакет `colcon build` без интернета и слушает `/result/velocity` и `/result/position` (`nav_msgs/msg/Odometry`). Материалы — в `docs/context/` (описание задачи, форма сдачи, открытие, QA 25.09). Контракт топиков и фреймов — `docs/interfaces.md`, меняется только отдельным PR через лида (AGENTS.md §7).
 
 ## 2. За что баллы
 
@@ -44,14 +44,14 @@
 
 ## 4. Устройство решения
 
-Пакет `src/tram_odometry` (ament_python, чистый Python, без внешних зависимостей) и `src/tram_vehicle_msgs` (сообщения организаторов). Основная ветка разработки — PR #4.
+Пакет `src/tram_odometry` (ament_python, чистый Python, без внешних зависимостей) и `src/tram_vehicle_msgs` (сообщения организаторов). Основная ветка разработки — PR #4. Отдельная независимая реализация (EKF, привязки к стоянкам, оценка k по ним, публикация по таймеру) — ветка `claude/odometry-core`.
 
 | Модуль | Роль |
 |---|---|
 | `model.py` | `TractionModel`: таблица ускорения a(u, v) 31 × 16 из `config/traction_table.csv`, задержка отклика 0,4 с |
 | `estimator.py` | `TramEstimator`: EKF на `[s, v, d]` — прогноз по модели, гейт χ², согласование тележек, зависания, пересинхронизация, привязка к стоянкам, выставка по GNSS, режим без GNSS, выход `base_link` в MGRS |
 | `route_map.py`, `geo.py` | карта линии с отводами, `pose(s)`, `locate_start`; WGS-84 ↔ ENU, UTM, `UtmLocal` (MGRS) |
-| `node.py` | только ROS: подписки, публикации с меткой входа, диагностика; прогноз по модели при молчании входов — ветка `claude/keepalive-output` |
+| `node.py` | только ROS: подписки, публикации с меткой входа, диагностика |
 | `maps/`, `config/` | карта, отводы, стоянки; таблица тяги, параметры ноды |
 
 Офлайн-часть — `research/claude/`: чтение bag без ROS (`bagio.py`), построение карты и таблицы тяги, эмулятор судьи (`evaluate.py`), кросс-валидация (`cv.py`), разбор симуляции (`analyze_sim.py`). Одно ядро оценки работает и в ноде, и в офлайн-оценке — так мы меряем ровно то, что сдаём.
@@ -73,7 +73,7 @@
 | Данные и идентификация (офлайн) | `rosbags`, numpy, scipy, matplotlib; кэш `.npz` |
 | Ядро оценки | чистый Python 3.10, pytest |
 | Рантайм | ROS 2 Humble, rclpy, ament_python, colcon; Docker на `ros:humble-ros-base` |
-| Проверка | `docker/sim.sh` + `analyze_sim.py` (на bag), `scripts/realtime_check.py` (без bag, с глушением входов) |
+| Проверка | `docker/sim.sh` + `analyze_sim.py` (на bag, PR #4), `scripts/check_ros.sh` и `scripts/realtime_check.py` (без bag, ветка `claude/odometry-core`) |
 | Качество | ruff только на изменённых файлах, pytest |
 
 Не берём: robot_localization и fuse (не вмещают модель тяги), Nav2 и Autoware, PyTorch и TensorFlow. GPL-код (OpenRails, RRS) не копируем: берём только формулы. Новые внешние зависимости — только с согласия лида.
@@ -107,8 +107,8 @@ docker build -f docker/Dockerfile -t tram-odometry .   # сборка без и�
 docker run --rm -v <bag>:/data -v $PWD/out:/out tram-odometry sim.sh /data/<прогон> /out/<прогон>
 python3 research/claude/analyze_sim.py out/<прогон> <id прогона>
 
-# в контейнере с запущенной нодой: нагрузка и глушение всех входов на 1,5 с (ветка claude/keepalive-output)
-python3 scripts/realtime_check.py --duration 60 --pid $(pgrep -x tram_odometry_n) --stall-at 30 --stall-s 1.5
+# ветка claude/odometry-core: сборка без сети, тесты и замер реального времени в Humble с лимитами жюри
+ROS_IMAGE=mirror.gcr.io/library/ros:humble-ros-base scripts/check_ros.sh
 ```
 
 ## 10. Известные слабые места (26.09)
