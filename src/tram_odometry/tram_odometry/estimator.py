@@ -110,6 +110,16 @@ class Estimator:
         self.resets += 1
         self._init_state(t)
 
+    def set_position(self, s, sigma):
+        """Абсолютное положение на пути (выставка по GNSS): s и его СКО; связи s с другими
+        состояниями обнуляются, счёт пути для оценки k начинается заново."""
+        self.x[S] = s
+        for i in range(N):
+            self.P[S][i] = self.P[i][S] = 0.0
+        self.P[S][S] = sigma * sigma
+        self.odo = 0.0
+        self._last_fix = None
+
     def set_initial(self, v=None, s=0.0, k=None):
         if v is not None:
             self.x[V] = max(v, 0.0)

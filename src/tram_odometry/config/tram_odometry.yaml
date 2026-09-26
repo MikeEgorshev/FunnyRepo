@@ -7,6 +7,7 @@ tram_odometry:
     rear_topic: /vehicle/rear_bogie_velocity
     cmd_topic: /vehicle/driver_position_cmd
     gnss_topic: /sensing/gnss/master/fix       # читается только в окне выставки
+    rover_topic: /sensing/gnss/rover/fix       # база master → rover даёт курс и на стоянке
     velocity_topic: /result/velocity
     position_topic: /result/position
     diagnostics_topic: /result/diagnostics
@@ -18,6 +19,11 @@ tram_odometry:
     gnss_init_window_s: 5.0        # GNSS гарантирован только в первые секунды прогона
     gnss_min_move_m: 3.0           # меньше — курс по GNSS не определён
     initial_yaw: 0.0               # рад от оси восток, если курс не определён
+    output_frame: mgrs             # сетка судьи: UTM 37N минус (300000, 6100000); enu — от первой точки GNSS
+    route_map_file: ''             # карта линии CSV (s_m, lat, lon, alt); пусто — запасная прямая
+    stops_file: ''                 # места стоянок CSV (s_m, sigma_m); пусто — без привязок
+    output_lever_m: 9.873          # антенна master -> base_link вперёд по пути, м (QA 25.09)
+    output_dz_m: -3.0              # антенна на 3 м выше рельса
     var_cross: 1.0                 # м², поперечная неопределённость положения
     var_z: 4.0                     # м²
     var_yaw: 0.01                  # рад²
@@ -73,3 +79,5 @@ tram_odometry:
       accel_brake: 3.0             # м/с²
       accel_min_dt: 0.3            # с
       stale_s: 0.3                 # с
+      stuck_n: 6                   # одинаковых показаний подряд — датчик завис
+      stuck_min: 0.3               # м/с, нули на стоянке — не зависание

@@ -1,7 +1,8 @@
 """Нода ROS 2: подписки, таймер, параметры, публикации. Вся математика — в estimator.py.
 
-Входы: скорости тележек, позиция контроллера, GNSS master fix (только в окне выставки).
-Выходы: /result/velocity, /result/position (nav_msgs/Odometry), /result/diagnostics.
+Входы: скорости тележек, позиция контроллера, GNSS master и rover (только в окне выставки).
+Выходы: /result/velocity, /result/position (nav_msgs/Odometry, base_link в сетке MGRS или,
+без GNSS на старте, от старта в frame odom), /result/diagnostics.
 Публикация — по таймеру: выход не замирает, когда входы пропадают.
 """
 import math
@@ -18,9 +19,10 @@ from tram_odometry.estimator import Estimator, FilterParams
 from tram_odometry.model import ModelParams
 from tram_odometry.outputs import StampClock, pose_covariance, twist_covariance, yaw_to_quaternion
 from tram_odometry.params import NODE_DEFAULTS
+from tram_odometry.positioning import Positioner
 from tram_odometry.slip import SlipParams
 from tram_odometry.stops import StopFixer, StopParams
-from tram_odometry.track import GnssInit
+from tram_odometry.track import MgrsLocal, RouteTrack
 
 
 def _stamp(msg, fallback):
@@ -51,15 +53,22 @@ class TramOdometryNode(Node):
                              slip=_dataclass_params(self, 'slip', SlipParams))
         self.stop_params = _dataclass_params(self, 'stops', StopParams)
         self.clock_out = StampClock(self.cfg['max_extrapolation_s'])
+        cfg = self.cfg
+        route = None
+        if cfg['route_map_file']:
+            route = RouteTrack.load(cfg['route_map_file'], MgrsLocal(), cfg['stops_file'] or None)
+            self.get_logger().info(f'route map {route.length:.0f} m, {len(route.stops)} stops')
+        self.pos = Positioner(route, cfg['gnss_init_window_s'], cfg['output_frame'], cfg['output_lever_m'],
+                              cfg['output_dz_m'], cfg['initial_yaw'], cfg['gnss_min_move_m'])
         self._start_run()
 
         best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
-        cfg = self.cfg
         self.create_subscription(VelocitySensor, cfg['front_topic'], lambda m: self._wheel('front', m), best_effort)
         self.create_subscription(VelocitySensor, cfg['rear_topic'], lambda m: self._wheel('rear', m), best_effort)
         self.create_subscription(DriverControllerCommand, cfg['cmd_topic'], self._cmd, best_effort)
-        self.create_subscription(NavSatFix, cfg['gnss_topic'], self._gnss, best_effort)
+        self.create_subscription(NavSatFix, cfg['gnss_topic'], lambda m: self._gnss(m, False), best_effort)
+        self.create_subscription(NavSatFix, cfg['rover_topic'], lambda m: self._gnss(m, True), best_effort)
         self.pub_v = self.create_publisher(VelocitySensor, cfg['velocity_topic'], reliable)
         self.pub_odom = self.create_publisher(Odometry, cfg['position_topic'], reliable)
         self.pub_diag = self.create_publisher(DiagnosticArray, cfg['diagnostics_topic'], reliable)
@@ -74,14 +83,14 @@ class TramOdometryNode(Node):
 
     def _start_run(self):
         """Новый прогон: новая выставка по GNSS и новые часы выхода."""
-        self.init = GnssInit(self.cfg['gnss_init_window_s'], self.cfg['gnss_min_move_m'])
-        self._set_track(self.init.track(self.cfg['initial_yaw']))
+        self.pos.start_run()
+        self._use_track()
         self.clock_out.reset()
         self.resets_seen = self.est.resets
 
-    def _set_track(self, track):
-        """Путь даёт координаты; если у него есть уклон и стоянки — фильтр их использует."""
-        self.track = track
+    def _use_track(self):
+        """Если у пути есть уклон и места стоянок (карта) — фильтр их использует."""
+        track = self.pos.track
         self.est.grade_at = getattr(track, 'grade_at', None) or (lambda s: 0.0)
         stops = getattr(track, 'stops', None)
         self.stops = StopFixer(stops, getattr(track, 'length', None), self.stop_params) if stops else None
@@ -89,13 +98,17 @@ class TramOdometryNode(Node):
     def _input(self, t):
         if self.est.resets != self.resets_seen:
             self._start_run()
-        self.init.start(t)
         self.clock_out.input(t, self._now())
-        if not self.init.done and self.init.expired(t):
-            self._set_track(self.init.track(self.cfg['initial_yaw']))
-            self.get_logger().info(
-                f'GNSS alignment done: heading {"known" if self.init.heading_known else "unknown"}, '
-                f'yaw {math.degrees(self.track.yaw):.1f} deg')
+        if self.pos.update(t, self.est):
+            self._use_track()
+            init = self.pos.init
+            if init.relative:
+                self.get_logger().info('no GNSS at start: relative odometry in frame odom')
+            else:
+                yaw = init.heading()
+                self.get_logger().info(
+                    f'GNSS alignment done: heading {"unknown" if yaw is None else f"{math.degrees(yaw):.1f} deg"}, '
+                    f'map {"on, %.1f m to track" % self.pos.lock_dist if self.pos.lock_dist is not None else "off"}')
 
     def _wheel(self, which, msg):
         t = _stamp(msg, self._now())
@@ -109,14 +122,11 @@ class TramOdometryNode(Node):
         self.est.set_notch(t, int(msg.position))
         self._input(t)
 
-    def _gnss(self, msg):
-        if self.init.done:
+    def _gnss(self, msg, rover):
+        if self.pos.locked:
             return                                    # после выставки GNSS не используем
         t = _stamp(msg, self._now())
-        self.init.start(t)
-        self.init.fix(t, msg.latitude, msg.longitude, msg.altitude, msg.status.status)
-        if self.init.frame is not None:
-            self._set_track(self.init.track(self.cfg['initial_yaw']))
+        self.pos.fix(t, msg.latitude, msg.longitude, msg.altitude, msg.status.status, rover)
 
     # --- выходы ----------------------------------------------------------------
 
@@ -125,7 +135,7 @@ class TramOdometryNode(Node):
         if t is None:
             return
         st = self.est.state_at(t)
-        x, y, z, yaw = self.track.pose(st.s)
+        x, y, z, yaw, frame = self.pos.pose(st.s)
         sec, nsec = _to_time(t)
 
         vel = VelocitySensor()
@@ -136,7 +146,7 @@ class TramOdometryNode(Node):
 
         odom = Odometry()
         odom.header.stamp.sec, odom.header.stamp.nanosec = sec, nsec
-        odom.header.frame_id = self.cfg['frame_id']
+        odom.header.frame_id = self.cfg['frame_id'] if frame == 'map' else 'odom'
         odom.child_frame_id = self.cfg['child_frame_id']
         odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z = x, y, z
         q = yaw_to_quaternion(yaw)
@@ -157,6 +167,8 @@ class TramOdometryNode(Node):
         status.hardware_id = 'tram'
         if not st.wheels_ok:
             status.level, status.message = DiagnosticStatus.WARN, 'no wheel data: model only'
+        elif st.flags.frozen:
+            status.level, status.message = DiagnosticStatus.WARN, 'wheel sensor frozen: ignored'
         elif st.slip:
             status.level, status.message = DiagnosticStatus.WARN, 'slip or slide: wheels not trusted'
         else:
@@ -164,10 +176,12 @@ class TramOdometryNode(Node):
         values = {
             'slip': st.slip, 'slip_ratio': round(st.slip_ratio, 4), 'adhesion_used': round(st.adhesion_used, 4),
             'bogies_inconsistent': st.flags.inconsistent, 'front_accel_limit': st.flags.front_accel,
-            'rear_accel_limit': st.flags.rear_accel, 'wheels_ok': st.wheels_ok,
+            'rear_accel_limit': st.flags.rear_accel, 'front_frozen': st.flags.front_frozen,
+            'rear_frozen': st.flags.rear_frozen, 'wheels_ok': st.wheels_ok,
             'wheel_scale_k': round(st.k, 5), 'disturbance_accel': round(st.d, 4),
             'sigma_s_m': round(math.sqrt(st.var_s), 3), 's_m': round(st.s, 2),
-            'gnss_heading_known': self.init.heading_known, 'resets': self.est.resets,
+            'gnss_heading_known': self.pos.init.heading_known, 'relative_mode': self.pos.relative,
+            'resets': self.est.resets,
             'stop_fixes': self.stops.fixes if self.stops else 0,
         }
         status.values = [KeyValue(key=k, value=str(v)) for k, v in values.items()]

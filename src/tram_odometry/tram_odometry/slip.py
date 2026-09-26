@@ -5,7 +5,9 @@
   быстрая (медленная идёт юзом), на выбеге — среднее;
 - тележки расходятся больше порога несколько отсчётов подряд — признак проскальзывания;
 - ускорение колёс выше физического предела — тележка буксует или идёт юзом, её отсчёт
-  не используем.
+  не используем;
+- одно и то же ненулевое показание много раз подряд — датчик завис (организаторы: «бывают
+  зависания данных, довольно часто»), тележку не используем, пока показание не изменится.
 
 Все скорости здесь — в м/с (км/ч уже поделены на масштаб колёс k).
 """
@@ -21,6 +23,8 @@ class SlipParams:
     accel_brake: float = 3.0        # м/с², предел замедления колёс
     accel_min_dt: float = 0.3       # с, база производной: короче — шум и пачки дают ложные пики
     stale_s: float = 0.3            # с, старее — тележка считается пропавшей
+    stuck_n: int = 6                # одинаковых показаний подряд — датчик завис (живые повторы — 2–3)
+    stuck_min: float = 0.3          # м/с; на стоянке нули законно повторяются
 
 
 @dataclass
@@ -28,10 +32,17 @@ class SlipFlags:
     inconsistent: bool = False
     front_accel: bool = False
     rear_accel: bool = False
+    front_frozen: bool = False
+    rear_frozen: bool = False
 
     @property
     def any(self):
+        """Признак проскальзывания (зависание датчика — отдельный отказ, не проскальзывание)."""
         return self.inconsistent or self.front_accel or self.rear_accel
+
+    @property
+    def frozen(self):
+        return self.front_frozen or self.rear_frozen
 
 
 class Bogie:
@@ -41,9 +52,11 @@ class Bogie:
         self.t = None
         self.v = None
         self.accel = 0.0
+        self.repeats = 0
         self._ref = None   # (t, v): опорная точка для производной
 
-    def update(self, t, v, min_dt):
+    def update(self, t, v, min_dt, stuck_min=float('inf')):
+        self.repeats = self.repeats + 1 if v == self.v and v > stuck_min else 1
         if self._ref is None or t < self._ref[0]:
             self._ref = (t, v)
             self.accel = 0.0
@@ -55,6 +68,9 @@ class Bogie:
 
     def fresh(self, t, stale_s):
         return self.t is not None and t - self.t <= stale_s
+
+    def frozen(self, stuck_n):
+        return self.repeats >= stuck_n
 
 
 def pick_speed(front, rear, notch):
@@ -82,19 +98,20 @@ class SlipDetector:
 
     def wheel(self, which, t, v):
         bogie = self.front if which == 'front' else self.rear
-        bogie.update(t, v, self.p.accel_min_dt)
+        bogie.update(t, v, self.p.accel_min_dt, self.p.stuck_min)
 
     def fresh_speeds(self, t):
-        """Скорости свежих тележек: (front, rear), пропавшая — None."""
-        f = self.front.v if self.front.fresh(t, self.p.stale_s) else None
-        r = self.rear.v if self.rear.fresh(t, self.p.stale_s) else None
+        """Скорости свежих и не зависших тележек: (front, rear), недоступная — None."""
+        p = self.p
+        f = self.front.v if self.front.fresh(t, p.stale_s) and not self.front.frozen(p.stuck_n) else None
+        r = self.rear.v if self.rear.fresh(t, p.stale_s) and not self.rear.frozen(p.stuck_n) else None
         return f, r
 
     def check(self, t, notch, v_est):
         """Скорость для фильтра (или None) и флаги проскальзывания."""
         p = self.p
         front, rear = self.fresh_speeds(t)
-        flags = SlipFlags()
+        flags = SlipFlags(front_frozen=self.front.frozen(p.stuck_n), rear_frozen=self.rear.frozen(p.stuck_n))
         for name, bogie, value in (('front', self.front, front), ('rear', self.rear, rear)):
             if value is None:
                 continue

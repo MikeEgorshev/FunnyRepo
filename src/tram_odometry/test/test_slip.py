@@ -45,3 +45,23 @@ def test_stale_bogie_is_ignored():
     det.wheel('rear', 1.0, 6.0)
     assert det.fresh_speeds(1.0) == (None, 6.0)
     assert det.check(1.0, 3, 6.0)[0] == 6.0
+
+
+def test_frozen_sensor_is_dropped_until_it_changes():
+    det = SlipDetector(SlipParams(stuck_n=6))
+    for i in range(10):                              # задняя тележка застыла на 5,0 м/с
+        t = i * 0.1
+        det.wheel('front', t, 5.0 + 0.01 * i)
+        det.wheel('rear', t, 5.0)
+    z, flags = det.check(0.9, 3, 5.0)
+    assert flags.rear_frozen and not flags.front_frozen and not flags.any
+    assert det.fresh_speeds(0.9) == (5.09, None) and z == 5.09
+    det.wheel('rear', 1.0, 5.2)                      # показание сдвинулось — датчик снова в деле
+    assert det.fresh_speeds(1.0)[1] == 5.2
+
+
+def test_zeros_at_standstill_are_not_a_frozen_sensor():
+    det = SlipDetector()
+    for i in range(20):
+        det.wheel('front', i * 0.1, 0.0)
+    assert not det.front.frozen(det.p.stuck_n)
