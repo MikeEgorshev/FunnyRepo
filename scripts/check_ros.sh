@@ -7,6 +7,7 @@
 # TRAM_MSGS — пакет сообщений из датасета; не нужен, если он уже лежит в src/.
 # ROS_IMAGE — образ; при лимите Docker Hub: mirror.gcr.io/library/ros:humble-ros-base
 # DURATION  — длительность замера реального времени, с.
+# REALTIME_ARGS — доп. аргументы замера, например "--stall-at 30 --stall-s 1.5".
 set -euo pipefail
 
 IMAGE=${ROS_IMAGE:-ros:humble-ros-base}
@@ -26,6 +27,7 @@ fi
 find "$WS" -name __pycache__ -prune -exec rm -rf {} +
 
 docker run --rm --network none --cpus=2 --memory=512m -e DURATION="${DURATION:-60}" \
+  -e REALTIME_ARGS="${REALTIME_ARGS:-}" \
   -v "$WS":/ws -w /ws "$IMAGE" bash -c '
   set -e
   source /opt/ros/humble/setup.bash
@@ -36,4 +38,4 @@ docker run --rm --network none --cpus=2 --memory=512m -e DURATION="${DURATION:-6
   export ROS_DOMAIN_ID=11 ROS_LOCALHOST_ONLY=1
   ros2 launch tram_odometry tram_odometry.launch.py > /tmp/node.log 2>&1 &
   sleep 4
-  python3 scripts/realtime_check.py --duration "$DURATION" --pid "$(pgrep -x tram_odometry_n | head -1)"'
+  python3 scripts/realtime_check.py --duration "$DURATION" --pid "$(pgrep -x tram_odometry_n | head -1)" $REALTIME_ARGS'
