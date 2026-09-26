@@ -1,51 +1,49 @@
 # tram_odometry
 
-Резервная одометрия трамвая без GNSS: модель тяги и торможения, фильтр Калмана вдоль пути, обнаружение проскальзывания. Пакет ROS 2 Humble (ament_python).
+Резервная одометрия трамвая без GNSS: модель тяги и торможения, фильтр Калмана вдоль пути, обнаружение проскальзывания и зависаний датчиков, привязка к стоянкам. Пакет ROS 2 Humble (ament_python). Полное описание — [docs/solution.md](../../docs/solution.md).
 
 ## Состав
 
 | Модуль | Что делает | ROS |
 |---|---|---|
 | `model.py` | Ускорение на единицу массы: `a = f_tr(n, v) − f_br(n, v) − r(v) − g·θ` | нет |
-| `slip.py` | Выбор тележки по фазе, согласованность тележек, предел ускорения колёс, устаревание | нет |
+| `slip.py` | Выбор тележки по фазе, согласованность тележек, предел ускорения колёс, зависание, устаревание | нет |
 | `estimator.py` | EKF на `[s, v, d, k]`: прогноз по модели, отсев χ², стоянка, привязки дистанции, масштаб колёс k по расстояниям между привязками, сброс на новом прогоне | нет |
 | `stops.py` | Привязка к местам регулярных стоянок: стоянка дольше 5 с, одна стоянка в гейте — поправка s | нет |
-| `track.py` | ENU от первой точки GNSS, выставка курса, запасной путь-прямая | нет |
-| `outputs.py` | Поля `nav_msgs/Odometry`, метки выхода | нет |
-| `params.py` | Параметры ноды по умолчанию | нет |
+| `track.py` | Сетка MGRS судьи и ENU, карта линии из CSV, запасная прямая, выставка по GNSS (медиана, прыжки, курс по базе антенн) | нет |
+| `positioning.py` | Выставка → привязка к карте → `base_link`; режим без GNSS (frame `odom`) | нет |
+| `outputs.py`, `params.py` | Поля `nav_msgs/Odometry`, метки выхода; параметры ноды | нет |
 | `node.py` | Подписки, таймер 25 Гц, публикации, диагностика | да |
 
-Вся математика — без ROS и без внешних зависимостей: тот же код можно гонять офлайн по bag.
+Вся математика — без ROS и без внешних зависимостей: тот же код гоняется офлайн по bag (`scripts/evaluate_bags.py`).
 
 ## Сборка и запуск
 
 Нужен пакет сообщений `tram_vehicle_msgs` из датасета в том же рабочем пространстве (кладёт лид: пакеты `*_msgs` защищены, AGENTS.md §6).
 
 ```bash
-colcon build --symlink-install --packages-up-to tram_odometry
+colcon build --packages-up-to tram_odometry
 source install/setup.bash
-ros2 launch tram_odometry tram_odometry.launch.py use_sim_time:=true
-ros2 bag play <прогон> --clock          # в другом терминале
+ros2 launch tram_odometry tram_odometry.launch.py params_file:=<YAML с route_map_file и stops_file>
+ros2 bag play <прогон>          # в другом терминале
 ```
 
-Выходы: `/result/velocity` (`tram_vehicle_msgs/VelocitySensor`, м/с), `/result/position` (`nav_msgs/Odometry`, фрейм `map`), `/result/diagnostics` (флаг проскальзывания, доля сцепления, доверие тележкам, k).
+Выходы: `/result/velocity` (`tram_vehicle_msgs/VelocitySensor`, м/с), `/result/position` (`nav_msgs/Odometry`, `base_link` в сетке MGRS, фрейм `map`; без GNSS на старте — `odom`), `/result/diagnostics`.
 
-## Проверка в ROS 2 Humble
-
-`scripts/check_ros.sh` (из корня репозитория) собирает пакет без сети в чистом `ros:humble-ros-base` с лимитами 2 ядра и 512 МБ, гоняет тесты и замер реального времени. На синтетике: 25 Гц, задержка p99 48 мс, CPU 6 % ядра, память 59 МБ.
-
-## Тесты
+## Проверка
 
 ```bash
-python3 -m pytest src/tram_odometry/test -q          # без ROS
-colcon test --packages-select tram_odometry && colcon test-result --verbose
+python3 -m pytest src/tram_odometry/test -q                               # 50 тестов, без ROS
+ROS_IMAGE=mirror.gcr.io/library/ros:humble-ros-base TRAM_MSGS=<пакет сообщений> \
+  REALTIME_ARGS="--stall-at 30 --stall-s 1.5" scripts/check_ros.sh        # Humble: сборка без сети, тесты, реальное время
+python3 scripts/evaluate_bags.py <прогоны…> --route-map … --stops …       # точность по bag (pip install rosbags)
 ```
 
-Тесты на синтетических прогонах (`test/synthetic.py`): чистый ход, буксование, юз, пропуск обеих тележек на 20 с, привязки к стоянкам и обучение k по ним. Это не данные трамвая: на реальных прогонах пакет ещё не проверен.
+В Humble с лимитами 2 ядра и 512 МБ: 25 Гц, разрыв выхода не больше 79 мс даже при пропуске всех входов на 1,5 с, задержка p99 45 мс, CPU 6 % ядра, память 60 МБ.
 
 ## Что ещё не сделано
 
-- Параметры модели в `config/tram_odometry.yaml` — стартовые оценки. Их нужно идентифицировать по данным.
-- Положение пока по запасному пути: прямая от старта по курсу GNSS. Карта линии (PR #4) подключается объектом-путём: `pose(s) -> (x, y, z, yaw)`, а если у него есть `grade_at(s)`, `stops` и `length`, нода сама включает уклон в модели и привязки к стоянкам.
-- Тип и единицы `/result/velocity`, начало системы `map` и приёмник эталона — открытые вопросы к организаторам.
-- Сборка и тесты в ROS 2 Humble проверены с заменителем `tram_vehicle_msgs` (поля header, velocity, position). С настоящим пакетом из датасета и на реальных bag — ещё нет.
+- Параметры модели в `config/tram_odometry.yaml` — стартовые оценки: их нужно идентифицировать по данным.
+- Точность на реальных прогонах не измерена: датасета в среде разработки не было.
+- Карта и места стоянок в пакет не входят; отводов у конечных нет.
+- Сборка проверена с заменителем `tram_vehicle_msgs` с теми же полями.
