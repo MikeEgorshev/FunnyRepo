@@ -8,6 +8,7 @@
 Запуск: python build_route_map.py
 """
 import math
+import os
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -17,8 +18,13 @@ from bagio import GNSS_FIX, MAP_DIR, bag_ids, load_cached
 from tram_odometry.geo import Enu
 
 MAP_ORIGIN = (55.80, 37.42, 150.0)
-TEMPLATE_EW = '30639_0be558e2'  # старт у восточной остановки, конец в глубине западной петли
-TEMPLATE_WE = '30618_21dd3af3'  # старт в западной петле, конец у восточной остановки
+# Опорные поездки: на запад — через всю западную разворотную петлю, на запад-восток — от выхода из неё.
+# У прежних (30639_0be558e2, 30618_21dd3af3) GNSS на западной конечной уходил на 15–20 м от путей,
+# и карта вместо петли шла по несуществующему пути (ошибка в конце прогонов до 50 м).
+# Задать явно: TRAM_TEMPLATES=<восток->запад>,<запад->восток>
+TEMPLATE_EW, TEMPLATE_WE = (os.environ.get('TRAM_TEMPLATES') or '30618_0652866c,30618_073f08d1').split(',')
+EAST_STOP = (2652.0, 1159.0)      # конечная на востоке: там начинаются поездки на запад
+WEST_EXIT = (-1952.0, -64.0)      # выход из западной петли: там начинаются поездки на восток
 STEP = 1.0
 OUT = MAP_DIR / 'route.csv'
 ENU = Enu(*MAP_ORIGIN)
@@ -90,9 +96,9 @@ def main():
     with ProcessPoolExecutor(10) as ex:
         tracks = [(b, t) for b, t in zip(ids, ex.map(enu_track, ids)) if t is not None]
     by_id = dict(tracks)
-    # опорные поездки — только из прогонов, по которым строим карту (важно для кросс-валидации)
-    t_ew = TEMPLATE_EW if TEMPLATE_EW in by_id else pick_template(tracks, (2652, 1159), (-1959, -86))
-    t_we = TEMPLATE_WE if TEMPLATE_WE in by_id else pick_template(tracks, (-1955, -87), (2647, 1151))
+    # опорные поездки — только из прогонов, по которым строим карту (cv.py держит их в обучении)
+    t_ew = TEMPLATE_EW if TEMPLATE_EW in by_id else pick_template(tracks, EAST_STOP, WEST_EXIT)
+    t_we = TEMPLATE_WE if TEMPLATE_WE in by_id else pick_template(tracks, WEST_EXIT, EAST_STOP)
     print(f'опорные поездки: {t_ew}, {t_we}')
     ew = resample(decimate(by_id[t_ew][0]))
     we = resample(decimate(by_id[t_we][0]))
@@ -150,7 +156,7 @@ def main():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT, 'w', encoding='utf-8', newline='\n') as f:
         f.write('# Карта линии: замкнутый маршрут, шаг 1 м. Строится research/claude/build_route_map.py\n')
-        f.write(f'# опорные поездки: {TEMPLATE_EW}, {TEMPLATE_WE}\n')
+        f.write(f'# опорные поездки: {t_ew}, {t_we}\n')
         f.write('s_m,lat,lon,alt\n')
         for q, (x, y, zz) in enumerate(circuit):
             la, lo, al = ENU.inverse(x, y, zz)

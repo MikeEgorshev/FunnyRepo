@@ -1,7 +1,8 @@
 """Честная оценка: карта и отводы строятся по одной половине прогонов, проверка — на другой.
 
 Одинаковые прогоны (в датасете есть точные дубликаты) попадают в одну половину, иначе утечка.
-Карты складываются в dataset/cv/fold<k>/ (вне репозитория).
+Две опорные поездки карты (build_route_map.py) — съёмка маршрута: они в обучении обеих половин
+и в проверку не идут. Карты складываются в dataset/cv/fold<k>/ (вне репозитория).
 
 Запуск: python cv.py [--estimator baseline|mapstops] [--per-vehicle]  ->  out/eval_<оценщик>_cvfold*.csv и сводка
 """
@@ -15,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from bagio import DATASET, GNSS_FIX, bag_ids, load_cached
+from build_route_map import TEMPLATE_EW, TEMPLATE_WE
 
 HERE = Path(__file__).parent
 
@@ -39,13 +41,16 @@ def main():
     groups = {}
     for b in bag_ids():
         groups.setdefault(signature(b), []).append(b)
+    survey = [g for g in groups.values() if TEMPLATE_EW in g or TEMPLATE_WE in g]
     folds = ([], [])
-    for k, members in enumerate(sorted(groups.values())):
+    for k, members in enumerate(sorted(g for g in groups.values() if g not in survey)):
         folds[k % 2].extend(members)
-    print(f'{len(groups)} уникальных прогонов из {sum(map(len, folds))}; половины: {len(folds[0])} и {len(folds[1])}')
+    survey = sorted(b for g in survey for b in g)
+    print(f'{len(groups)} уникальных прогонов из {sum(map(len, folds)) + len(survey)}; половины: '
+          f'{len(folds[0])} и {len(folds[1])}, опорные поездки карты в обеих: {", ".join(survey)}')
     rows = []
     for k in (0, 1):
-        train, test = folds[1 - k], folds[k]
+        train, test = folds[1 - k] + survey, folds[k]
         cvdir = DATASET / 'cv' / f'fold{k}'
         cvdir.mkdir(parents=True, exist_ok=True)
         (cvdir / 'train.txt').write_text('\n'.join(train), encoding='utf-8')
