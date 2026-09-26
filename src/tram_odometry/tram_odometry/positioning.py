@@ -52,6 +52,8 @@ class Positioner:
             else:                            # едем: последний фикс — это «сейчас»
                 estimator.set_position(s0, max(dist, 3.0))
             self.track = self.route
+        elif not self.init.still:            # без карты и на ходу: прямая идёт от последнего фикса,
+            estimator.set_position(0.0, 3.0)  # значит и дистанция от него
         return True
 
     @property

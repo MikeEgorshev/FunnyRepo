@@ -53,3 +53,22 @@ def test_map_requires_mgrs_frame():
     route, _, _ = _ring()
     with pytest.raises(ValueError):
         Positioner(route, frame='enu')
+
+
+def test_moving_start_without_map_counts_distance_from_last_fix():
+    from test_track import M, _latlon_of
+    pos, est = Positioner(None, window_s=5.0), Estimator()
+    x0, y0, _ = M.forward(55.80, 37.42)
+    t = 0.0
+    for i in range(50):                          # едет на восток 5 м/с всё окно, фиксы 10 Гц
+        t = round(t + 0.1, 6)
+        est.set_notch(t, 3)
+        est.wheel('front', t, 18.0 * est.state().k / 3.6)
+        est.wheel('rear', t, 18.0 * est.state().k / 3.6)
+        lat, lon = _latlon_of(x0 + 5.0 * t, y0)
+        pos.fix(t, lat, lon, 150.0)
+        pos.update(t, est)
+    pos.update(5.3, est)                          # окно 5 с от первого фикса (0,1 с) закончилось
+    assert pos.locked and not pos.init.still
+    x, y, _, _, _ = pos.pose(est.state().s)
+    assert abs(x - (x0 + 25.0 + 9.873)) < 1.0 and abs(y - y0) < 0.5
