@@ -313,6 +313,23 @@ def find_stops(track, runs_fixes, cluster_m=15.0, min_runs=3, max_dist_m=5.0, **
     return sorted(stops)
 
 
+class Locator:
+    """Быстрый поиск s на карте по точке (x, y): ближайшая точка карты в радиусе r.
+    Курс не учитывается — годится для уклона и высоты (у двух путей они одинаковые)."""
+
+    def __init__(self, track, cell=20.0):
+        self.track = track
+        self.grid = _Grid(list(zip(track.x, track.y)), cell)
+
+    def s_at(self, x, y, r=15.0):
+        best = None
+        for j in self.grid.near(x, y, r):
+            d = math.hypot(self.track.x[j] - x, self.track.y[j] - y)
+            if d <= r and (best is None or d < best[1]):
+                best = (j, d)
+        return None if best is None else self.track.s[best[0]]
+
+
 def build(runs_fixes, step=2.0, **kw):
     """Полный цикл: [(t, x, y, z)] прогонов -> (RouteTrack в ENU, отчёт)."""
     runs = [clean_run(f, step) for f in runs_fixes]
