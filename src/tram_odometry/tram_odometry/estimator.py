@@ -27,7 +27,7 @@
 import math
 from collections import deque
 
-from .geo import Enu, UtmLocal
+from .geo import Enu, UtmLocal, utm_ok
 
 
 class Params:
@@ -160,7 +160,7 @@ class TramEstimator:
 
     # --- входы -----------------------------------------------------------------------------
     def on_gnss(self, stamp, lat, lon, alt):
-        if not all(math.isfinite(x) for x in (stamp, lat, lon, alt)):
+        if not all(math.isfinite(x) for x in (stamp, lat, lon, alt)) or not utm_ok(lat, lon):
             return None
         self.last_gnss_seen = stamp
         if self.enu is None:
@@ -299,7 +299,7 @@ class TramEstimator:
         """Антенна rover в окне выставки. False — окно прошло, подписку можно снять."""
         if self.mode == 'relative' or (self.t0_gnss is not None and stamp - self.t0_gnss > self.p.init_window_s):
             return False
-        if all(math.isfinite(x) for x in (stamp, lat, lon, alt)):
+        if all(math.isfinite(x) for x in (stamp, lat, lon, alt)) and utm_ok(lat, lon):
             self.rover_fixes.append((lat, lon, alt))
         return True
 

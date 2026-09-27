@@ -346,6 +346,18 @@ def test_gnss_jump_during_init_is_ignored():
     assert abs(est.s - 100.0) < 1.0
 
 
+def test_gnss_fix_at_the_pole_is_ignored():
+    """Широта ±90° (и точка в 90° от осевого меридиана) роняла проекцию UTM: math domain error."""
+    est = make()
+    for lat, lon in ((90.0, 180.0), (-90.0, -180.0), (0.0, 129.0), (91.0, 0.0)):
+        est.on_gnss_rover(1.0, lat, lon, 150.0)          # окно выставки
+        assert est.on_gnss(1.0, lat, lon, 150.0) is None
+        assert est.on_gnss(10.0, lat, lon, 150.0) is None  # коррекция по ходу
+    assert est.rover_fixes == []
+    out = est.on_wheel(10.1, True, 0.0)
+    assert out is None or (math.isfinite(out['x']) and math.isfinite(out['y']))
+
+
 def test_garbage_inputs_do_not_crash():
     est = make()
     for i, z in enumerate([float('nan'), -5.0, 1e6, 0.0, 30.0]):

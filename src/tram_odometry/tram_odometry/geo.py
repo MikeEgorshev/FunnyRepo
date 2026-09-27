@@ -26,6 +26,14 @@ def from_ecef(x, y, z):
     return math.degrees(lat), math.degrees(lon), p / math.cos(lat) - n
 
 
+def utm_ok(lat, lon, zone=37):
+    """Точка, где utm_forward определена: не у полюса и не дальше 60° от осевого меридиана зоны.
+
+    На широте ±90° (и в 90° от меридиана) формулы дают math domain error: такой фикс GNSS — мусор.
+    """
+    return abs(lat) < 84.0 and abs(lon - (zone * 6 - 183)) < 60.0
+
+
 def utm_forward(lat, lon, zone=37):
     """WGS-84 -> UTM (северное полушарие): (E, N), м. Ряды Крюгера, точность ~1 мм в пределах зоны."""
     k0, n = 0.9996, F / (2 - F)
