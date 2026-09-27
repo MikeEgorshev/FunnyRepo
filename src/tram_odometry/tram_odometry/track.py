@@ -42,6 +42,19 @@ class LocalFrame:
         d = (p[0] - self._o[0], p[1] - self._o[1], p[2] - self._o[2])
         return tuple(sum(row[i] * d[i] for i in range(3)) for row in self._r)
 
+    def inverse(self, e, n, u=0.0):
+        """ENU -> (lat, lon, alt): для записи карты, построенной в ENU."""
+        v = (e, n, u)
+        x, y, z = (self._o[i] + sum(self._r[k][i] * v[k] for k in range(3)) for i in range(3))
+        p, lon = math.hypot(x, y), math.atan2(y, x)
+        lat = math.atan2(z, p * (1.0 - _E2))
+        for _ in range(6):
+            nn = _A / math.sqrt(1.0 - _E2 * math.sin(lat) ** 2)
+            alt = p / math.cos(lat) - nn
+            lat = math.atan2(z, p * (1.0 - _E2 * nn / (nn + alt)))
+        nn = _A / math.sqrt(1.0 - _E2 * math.sin(lat) ** 2)
+        return math.degrees(lat), math.degrees(lon), p / math.cos(lat) - nn
+
 
 class MgrsLocal:
     """Сетка UTM со сдвигом начала: (E - false_e, N - false_n, высота). По умолчанию — MGRS
