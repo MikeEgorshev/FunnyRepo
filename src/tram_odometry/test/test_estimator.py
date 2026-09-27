@@ -264,6 +264,77 @@ def test_gnss_far_from_track_is_ignored():
     assert abs(est.s - s_true) < 2.0
 
 
+def _stub_route():
+    """Кольцо: путь прибытия на запад по y = 0, разворот, отправление на восток по y = −20; тупик —
+    стартовый отвод от (290, 60) к пути прибытия в (400, 0) (развилка на кольце s = 600)."""
+    enu = Enu(*ORIGIN)
+    pts = [(1000.0 - i, 0.0) for i in range(0, 1001)]
+    pts += [(-10.0 * math.sin(a / 20 * math.pi), -10.0 + 10.0 * math.cos(a / 20 * math.pi)) for a in range(1, 20)]
+    pts += [(float(x), -20.0) for x in range(0, 1001)]
+    s, lat, lon, alt, acc = [], [], [], [], 0.0
+    for i, (x, y) in enumerate(pts):
+        if i:
+            acc += math.hypot(x - pts[i - 1][0], y - pts[i - 1][1])
+        la, lo, al = enu.inverse(x, y, 0.0)
+        s.append(acc)
+        lat.append(la)
+        lon.append(lo)
+        alt.append(al)
+    route = RouteMap(s, lat, lon, alt)
+    spur = {'s_join': 1000.0 + math.pi * 10 + 400.0, 'd': [], 'lat': [], 'lon': [], 'alt': []}
+    for k in range(126):
+        x, y = 290.0 + 110.0 * k / 125, 60.0 - 60.0 * k / 125
+        la, lo, al = enu.inverse(x, y, 0.0)
+        spur['d'].append(k * math.hypot(110.0, 60.0) / 125)
+        spur['lat'].append(la)
+        spur['lon'].append(lo)
+        spur['alt'].append(al)
+    route.spurs = [spur]
+    return route
+
+
+def _stop_after(distance):
+    """Трамвай от x = 900 на запад по пути прибытия, встаёт через distance м -> выход и оценщик."""
+    p = Params()
+    p.wheel_kmh_per_mps = K
+    p.output_frame = 'enu'
+    est = TramEstimator(_stub_route(), flat_model(), [(50.0, 0.5)], p)
+    la, lo, al = Enu(*ORIGIN).inverse(900.0, 0.0, 0.0)
+    est.on_gnss(0.0, la, lo, al)
+    t, s, v, dt, out = 0.0, 0.0, 0.0, 0.05, None
+    stand = 0.0
+    while stand < 4.0:
+        left = distance - s
+        if left <= 0.05 and v < 0.05:
+            v, u = 0.0, 0
+            stand += dt
+        elif v * v / 1.6 >= left:
+            v, u = max(0.0, v - 0.8 * dt), -10
+        else:
+            v, u = min(8.0, v + 0.5 * dt), 10 if v < 8.0 else 0
+        s += v * dt
+        t = round(t + dt, 6)
+        out = est.on_cmd(t, u) or out
+        if round(t / dt) % 2 == 0:
+            for front in (True, False):
+                out = est.on_wheel(t, front, v * K + (0.01 if front else 0.0) * (round(t / dt) % 4 - 1)) or out
+    return est, out
+
+
+def test_stop_past_fork_at_stub_end_moves_into_stub():
+    est, out = _stop_after(500.0 + 110.0)  # старт на s = 100, развилка на s = 600: встали в 110 м за ней
+    # передом в тупик: base_link на 9,873 м глубже антенны — в 119,9 м от развилки по тупику
+    x, y, _ = est.enu.forward(*Enu(*ORIGIN).inverse(400.0 - 110.0 * 119.87 / 125.3, 60.0 * 119.87 / 125.3, 0.0))
+    assert math.hypot(out['x'] - x, out['y'] - y) < 2.0
+    assert abs(math.cos(out['yaw']) - (-110.0 / 125.3)) < 0.05
+
+
+def test_stop_past_fork_at_loop_stop_stays_on_ring():
+    est, out = _stop_after(500.0 + 70.0)  # встали в 70 м за развилкой — как на стоянке прибытия в петле
+    x, y, _ = est.enu.forward(*Enu(*ORIGIN).inverse(900.0 - 570.0 - 9.873, 0.0, 0.0))
+    assert math.hypot(out['x'] - x, out['y'] - y) < 2.0
+
+
 def test_gnss_jump_during_init_is_ignored():
     est = make()
     enu = Enu(*ORIGIN)

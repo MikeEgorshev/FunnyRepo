@@ -69,6 +69,9 @@ class Params:
     stop_confirm_s = 2.0         # стоим дольше — привязка к месту стоянки
     stop_gate_sigma = 3.0
     stop_gate_max_m = 60.0
+    stub_min_m = 88.0            # тупик у западной конечной: за развилкой в петле встают в 22–75 м (или объезжают
+    stub_margin_m = 15.0         #   её), в тупике — в 110–136 м; встали в stub_min_m…длина тупика + stub_margin_m —
+    stub_join_m = 6.0            #   в тупике. Развилка — выход длинного отвода на кольцо у встречного пути, м
     sigma_c0 = 0.002             # априорное СКО масштаба колёс. Разброс по прогонам 0,3 % (30618) и 0,7 % (30639),
                                  #   но смелее учить нельзя: ложная привязка (светофор у стоянки) уходит в масштаб
     sigma_c_rw = 2e-5            # его медленное блуждание, 1/√с
@@ -125,6 +128,8 @@ class TramEstimator:
         self.reject_since = None
         self.stop_since = None
         self.snapped = False
+        self._stubs = None                # тупики у конечных: [(отвод, s развилки, длина)], считаются при первой стоянке
+        self.facing = 1.0                 # −1 — передом к тупику: base_link позади антенны по направлению s
         self.d_since_fix = 0.0            # путь с последней привязки (выставки или стоянки), м
         self.slip = False
         self.last_out = None
@@ -476,6 +481,8 @@ class TramEstimator:
     def _snap(self):
         if not self.ready or not self.stops or self.mode == 'relative':
             return
+        if self._enter_stub():
+            return
         sp = self.map.active_spur
         if sp is not None and self.s < sp['s_join']:
             return
@@ -497,6 +504,60 @@ class TramEstimator:
         self.c = max(-self.p.scale_max, min(self.p.scale_max, self.c + K[3] * nu))
         self._joseph(K, (1.0, 0.0, 0.0, 0.0), S - var_s)
         self.d_since_fix = 0.0
+
+    def _enter_stub(self):
+        """Встали за развилкой «петля/тупик» там, где кончается тупик, — трамвай в тупике.
+
+        Тупик в карте — стартовый отвод: по нему уходят рейсы от конечной. В петлю и в тупик сворачивают
+        с одной развилки на пути прибытия; без GNSS ветку не видно, по умолчанию — петля (так кончаются
+        28 из 32 прогонов). Но места остановки на ветках разные: встали в stub_min_m…длина тупика +
+        stub_margin_m от развилки — переводим в тупик, как на старте с отвода: s = s_join − путь от
+        развилки. Поедем дальше — по отводу к кольцу, как отправляющийся рейс.
+        """
+        sp = self.map.active_spur
+        if sp is not None and self.s < sp['s_join']:
+            return False
+        L = self.map.length
+        for spur, s_fork, length in self._stub_forks():
+            delta = (self.s - s_fork) % L
+            if self.p.stub_min_m <= delta <= length + self.p.stub_margin_m:
+                self.map.active_spur = spur
+                self.s = spur['s_join'] - min(delta, length)
+                # въехали передом, а s на отводе растёт к выходу: base_link (передняя тележка) — глубже
+                # в тупике, чем антенна; уедем — задом, и так до конца прогона
+                self.facing = -1.0
+                return True
+        return False
+
+    def _stub_forks(self):
+        """Длинные стартовые отводы, чей выход на кольцо лежит у пути встречного направления (прибытия)."""
+        if self._stubs is not None:
+            return self._stubs
+        m, self._stubs = self.map, []
+        n = len(m.s)
+        for sp in m.spurs:
+            length = sp['d'][-1] - sp['d'][0]
+            if len(sp['x']) < 2 or length < self.p.stub_min_m + self.p.stub_margin_m:
+                continue
+            jx, jy = sp['x'][-1], sp['y'][-1]
+            h = math.atan2(jy - sp['y'][-2], jx - sp['x'][-2])
+            best = None
+            for i in range(n):
+                d = math.hypot(m.x[i] - jx, m.y[i] - jy)
+                if d > self.p.stub_join_m or (best is not None and d >= best[0]):
+                    continue
+                j = (i + 1) % n
+                hr = math.atan2(m.y[j] - m.y[i], m.x[j] - m.x[i])
+                if abs(math.atan2(math.sin(hr - h), math.cos(hr - h))) > math.radians(120):
+                    best = (d, m.s[i])
+            if best is None:
+                continue
+            same = [k for k, (_, f, _) in enumerate(self._stubs) if abs(f - best[1]) <= 20.0]
+            if not same:
+                self._stubs.append((sp, best[1], length))
+            elif length > self._stubs[same[0]][2]:  # одна развилка — берём самый длинный отвод
+                self._stubs[same[0]] = (sp, best[1], length)
+        return self._stubs
 
     # --- выход -------------------------------------------------------------------------------
     def predict_output(self, stamp):
@@ -521,8 +582,10 @@ class TramEstimator:
         if self.mode == 'relative':  # без GNSS: пройденный путь по оси x от старта
             x, y, z, yaw, frame = self.s, 0.0, 0.0, 0.0, 'odom'
         else:
-            x, y, z, yaw = self.map.pose(self.s + self.p.output_lever_m)
+            x, y, z, yaw = self.map.pose(self.s + self.facing * self.p.output_lever_m)
             z += self.p.output_dz_m
+            if self.facing < 0:
+                yaw = math.atan2(-math.sin(yaw), -math.cos(yaw))
         if self.p.output_origin == 'start' and self.mode != 'relative':
             if self.origin is None:
                 self.origin = (x, y, z)
