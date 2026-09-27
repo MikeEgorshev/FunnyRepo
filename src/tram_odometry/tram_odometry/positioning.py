@@ -14,10 +14,11 @@ from tram_odometry.track import GnssInit, StraightTrack
 
 class Positioner:
     def __init__(self, route=None, window_s=5.0, frame='mgrs', lever_m=9.873, dz_m=-3.0,
-                 fallback_yaw=0.0, min_move_m=3.0):
+                 fallback_yaw=0.0, min_move_m=3.0, max_lock_m=50.0):
         if route is not None and frame != 'mgrs':
             raise ValueError('карта задана в сетке MGRS: выход с картой — только frame=mgrs')
         self.route = route
+        self.max_lock_m = max_lock_m
         self.window_s, self.frame, self.min_move_m = window_s, frame, min_move_m
         self.lever_m, self.dz_m, self.fallback_yaw = lever_m, dz_m, fallback_yaw
         self.start_run()
@@ -43,17 +44,27 @@ class Positioner:
         self.locked = True
         if self.init.relative:
             self.track = StraightTrack()
-        elif self.route is not None:
-            x, y, _ = self.init.start_point()
-            s0, dist = self.route.locate(x, y, self.init.heading())
-            self.lock_dist = dist
-            if self.init.still:              # стоим с начала окна: к проекции добавляем то, что проехали
-                estimator.set_position(s0 + estimator.state().s, max(dist, 1.0))
-            else:                            # едем: последний фикс — это «сейчас»
-                estimator.set_position(s0, max(dist, 3.0))
+        elif self.route is not None and self._lock_route(estimator):
             self.track = self.route
         elif not self.init.still:            # без карты и на ходу: прямая идёт от последнего фикса,
             estimator.set_position(0.0, 3.0)  # значит и дистанция от него
+        return True
+
+    def _lock_route(self, estimator):
+        """Проекция точки старта на карту. С курсом — свой путь двухпутки; ни одного участка
+        с таким курсом рядом (старт на развороте, курс не определён точно) — без курса.
+        Дальше max_lock_m от карты (депо, отвод) — карту не используем: прямая от старта."""
+        x, y, _ = self.init.start_point()
+        s0, dist = self.route.locate(x, y, self.init.heading())
+        if not dist <= self.max_lock_m:
+            s0, dist = self.route.locate(x, y)
+        self.lock_dist = dist
+        if not dist <= self.max_lock_m:
+            return False
+        if self.init.still:              # стоим с начала окна: к проекции добавляем то, что проехали
+            estimator.set_position(s0 + estimator.state().s, max(dist, 1.0))
+        else:                            # едем: последний фикс — это «сейчас»
+            estimator.set_position(s0, max(dist, 3.0))
         return True
 
     @property

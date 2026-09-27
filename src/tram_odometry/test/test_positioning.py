@@ -72,3 +72,23 @@ def test_moving_start_without_map_counts_distance_from_last_fix():
     assert pos.locked and not pos.init.still
     x, y, _, _, _ = pos.pose(est.state().s)
     assert abs(x - (x0 + 25.0 + 9.873)) < 1.0 and abs(y - y0) < 0.5
+
+
+def test_start_far_from_map_falls_back_to_straight_line():
+    route, _, _ = _ring()
+    pos, est = Positioner(route, window_s=5.0), Estimator()
+    xa, ya, _, _ = route.pose(300.0)
+    _fixes(pos, xa + 400.0, ya + 400.0)           # депо: 560 м от карты
+    _drive(pos, est, 6.0)
+    assert pos.locked and pos.track is not route and pos.lock_dist > 50.0
+    assert math.isfinite(est.state().var_s)
+
+
+def test_heading_across_the_track_still_locks_without_heading():
+    route, _, _ = _ring()
+    pos, est = Positioner(route, window_s=5.0), Estimator()
+    xa, ya, _, yaw = route.pose(300.0)
+    _fixes(pos, xa, ya)
+    _fixes(pos, xa - 12.436 * math.sin(yaw), ya + 12.436 * math.cos(yaw), rover=True)   # курс поперёк пути
+    _drive(pos, est, 6.0)
+    assert pos.track is route and abs(est.state().s - 300.0) < 1.0
