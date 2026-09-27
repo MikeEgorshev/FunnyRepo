@@ -110,3 +110,17 @@ def test_gnss_fix_after_alignment_corrects_distance_only_when_enabled():
         pos.update(6.1, est)
         s = est.state().s
         assert (abs(s - 300.0) < 2.0) if enabled else (abs(s - 280.0) < 0.5)
+
+
+def test_pose_is_ready_only_with_start_point_and_heading():
+    from test_track import M
+    pos = Positioner(None, window_s=5.0)
+    assert not pos.ready                          # ни одного фикса: (0, 0) публиковать нельзя
+    x0, y0, _ = M.forward(55.80, 37.42)
+    _fixes(pos, x0, y0, n=3)
+    assert not pos.ready                          # точка есть, курса нет (rover ещё не пришёл, стоим)
+    _fixes(pos, x0, y0 + 12.436, n=3, rover=True)
+    assert pos.ready
+    pos2, est2 = Positioner(None, window_s=5.0), Estimator()
+    _drive(pos2, est2, 6.0)                       # GNSS не было всё окно: относительная одометрия
+    assert pos2.ready and pos2.relative

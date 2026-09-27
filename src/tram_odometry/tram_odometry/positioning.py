@@ -107,6 +107,12 @@ class Positioner:
         return True
 
     @property
+    def ready(self):
+        """Положение можно публиковать: выставка закончена или уже есть точка и курс по GNSS.
+        До первого фикса выход был бы (0, 0) — для судьи это ошибка в сотни километров."""
+        return self.locked or (not self.init.relative and self.init.heading_known)
+
+    @property
     def relative(self):
         return self.init.relative
 

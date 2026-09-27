@@ -144,6 +144,8 @@ class TramOdometryNode(Node):
         vel.header.frame_id = self.cfg['child_frame_id']
         vel.velocity = float(st.v)
         self.pub_v.publish(vel)
+        if not self.pos.ready:
+            return                                    # положения ещё нет: не публикуем выдумку
 
         odom = Odometry()
         odom.header.stamp.sec, odom.header.stamp.nanosec = sec, nsec
