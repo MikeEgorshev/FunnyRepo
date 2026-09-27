@@ -31,8 +31,8 @@ PAGE = ROOT / 'docs' / 'presentation.html'
 
 # Замер реального времени (scripts/check_ros.sh, ros:humble-ros-base, --cpus=2 --memory=512m --network none).
 REALTIME = [
-    {'name': 'Без GNSS, все входы молчат 1,5 с', 'rate_hz': 25.02, 'max_gap_ms': 52.1, 'p50_ms': 22.3, 'p99_ms': 47.9,
-     'max_ms': 97.2, 'cpu_pct': 4.5, 'rss_mb': 58.8, 'frame': 'odom'},
+    {'name': 'Без GNSS, все входы молчат 1,5 с', 'rate_hz': 25.02, 'max_gap_ms': 61.0, 'p50_ms': 21.6, 'p99_ms': 47.2,
+     'max_ms': 97.0, 'cpu_pct': 4.4, 'rss_mb': 58.9, 'frame': 'odom'},
     {'name': 'GNSS на старте: выставка и курс', 'rate_hz': 25.02, 'max_gap_ms': 64.8, 'p50_ms': 22.7, 'p99_ms': 48.4,
      'max_ms': 49.6, 'cpu_pct': 4.6, 'rss_mb': 59.0, 'frame': 'map'},
 ]
