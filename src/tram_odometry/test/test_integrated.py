@@ -64,7 +64,7 @@ def test_late_gnss_and_reference_cannot_change_state_even_with_flags():
         assert a.on_gnss_rover(t, 55.9, 37.6, 200.) is False
         a.on_primary(t, 100., 100., 0.)
     assert (a.s, a.v, a.d, a.c, a.P) == (b.s, b.v, b.d, b.c, b.P)
-    assert not a.p.primary_sync and not a.p.gnss_corrections
+    assert not a.p.primary_sync and a.p.gnss_corrections
 
 
 def test_no_gnss_start_has_relative_output():

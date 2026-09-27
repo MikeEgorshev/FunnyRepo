@@ -1,4 +1,4 @@
-"""Competition entry point: enforced initialization-only GNSS, causal heartbeat."""
+"""Competition entry point: position-only GNSS corrections, causal heartbeat."""
 import math
 import time
 from collections import deque
@@ -34,7 +34,7 @@ class TramOdometryNode(LegacyNode):
         if msg.status.status < 0:
             return
         out = self.est.on_gnss(self._stamp(msg), msg.latitude, msg.longitude, msg.altitude)
-        if self.est.init_locked and self.gnss_sub is not None:
+        if self.est.init_locked and not self.est.p.gnss_corrections and self.gnss_sub is not None:
             self.destroy_subscription(self.gnss_sub)
             self.gnss_sub = None
         self._publish(out, msg.header.stamp, time.perf_counter())

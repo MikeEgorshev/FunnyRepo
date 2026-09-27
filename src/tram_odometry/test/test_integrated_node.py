@@ -127,3 +127,15 @@ def test_covariance_is_symmetric_and_nonnegative(node):
     c = published['/result/position'][-1].pose.covariance
     assert c[1] == c[6]
     assert c[0]*c[7] - c[1]*c[6] >= 0
+
+
+def test_late_fix_subscription_follows_correction_flag(node):
+    n, _, _, subs = node
+    n.est.on_gnss(100., 55.8104, 37.4623, 168.)
+    msg = Message(header=Message(stamp=stamp(110.)), status=Message(status=0),
+                  latitude=55.8104, longitude=37.4623, altitude=168.)
+    n._gnss(msg)
+    assert n.gnss_sub in subs
+    n.est.p.gnss_corrections = False
+    n._gnss(msg)
+    assert n.gnss_sub is None
