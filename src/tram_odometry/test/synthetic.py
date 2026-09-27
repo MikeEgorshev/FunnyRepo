@@ -6,7 +6,7 @@
 import random
 from dataclasses import dataclass, field
 
-from tram_odometry.model import ModelParams, accel
+from tram_odometry.model import ModelParams, accel, lag
 
 
 def notch_at(t):
@@ -33,6 +33,7 @@ class Scenario:
     dropout: list = field(default_factory=list)  # обе тележки молчат
     slip_ratio: float = 0.2
     seed: int = 1
+    notch_fn: object = None                      # позиция контроллера от времени; None — notch_at
 
 
 def _inside(t, spans):
@@ -47,13 +48,15 @@ def run(sc):
     """
     rnd = random.Random(sc.seed)
     dt = 0.01
-    v = s = 0.0
+    v = s = u = 0.0
     events, truth = [], []
     steps = int(sc.duration / dt)
+    notch_fn = sc.notch_fn or notch_at
     for i in range(steps + 1):
         t = i * dt
-        n = notch_at(t)
-        v = max(0.0, v + accel(n, v, sc.truth) * dt)
+        n = notch_fn(t)
+        u = lag(u, n, dt, sc.truth)
+        v = max(0.0, v + accel(u, v, sc.truth) * dt)
         s += v * dt
         truth.append((t, s, v))
         if i % 5 == 0:

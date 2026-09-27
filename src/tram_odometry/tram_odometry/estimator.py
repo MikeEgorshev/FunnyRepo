@@ -16,7 +16,7 @@ reject_max_s, отсчёты снова принимаются, но с боль
 import math
 from dataclasses import dataclass, field
 
-from tram_odometry.model import G, ModelParams, accel, accel_dv
+from tram_odometry.model import G, ModelParams, accel, accel_dv, lag
 from tram_odometry.slip import SlipDetector, SlipFlags, SlipParams
 
 N = 4
@@ -96,6 +96,7 @@ class Estimator:
         self.P[D][D] = 0.05 ** 2
         self.P[K][K] = p.sigma_k0 ** 2
         self.notch = 0
+        self.u = 0.0                  # позиция контроллера после запаздывания привода
         self.flags = SlipFlags()
         self.slip = False
         self.slip_ratio = 0.0
@@ -155,7 +156,8 @@ class Estimator:
     def _predict(self, dt):
         x, p, m = self.x, self.p, self.model
         grade = self.grade_at(x[S])
-        a = accel(self.notch, x[V], m, grade) + x[D]
+        self.u = lag(self.u, self.notch, dt, m)
+        a = accel(self.u, x[V], m, grade) + x[D]
         v_new = x[V] + a * dt
         if v_new < 0.0:                   # трамвай не едет назад: останавливается
             a = -x[V] / dt if dt > 0 else 0.0
@@ -164,7 +166,7 @@ class Estimator:
         x[S] += ds
         self.odo += ds
         x[V] = v_new
-        dadv = accel_dv(self.notch, x[V], m, grade)
+        dadv = accel_dv(self.u, x[V], m, grade)
         F = [[1.0, dt, 0.5 * dt * dt, 0.0],
              [0.0, 1.0 + dadv * dt, dt, 0.0],
              [0.0, 0.0, 1.0, 0.0],
@@ -290,10 +292,10 @@ class Estimator:
         """
         if self.t is None or t <= self.t:
             return self.state()
-        saved = (list(self.x), [row[:] for row in self.P], self.t)
+        saved = (list(self.x), [row[:] for row in self.P], self.t, self.u)
         self.advance(t)
         st = self.state()
-        self.x, self.P, self.t = saved
+        self.x, self.P, self.t, self.u = saved
         return st
 
     def state(self):
@@ -303,7 +305,7 @@ class Estimator:
             t=self.t if self.t is not None else 0.0,
             s=x[S], v=x[V], d=x[D], k=x[K],
             var_s=max(self.P[S][S], 0.0) + self._scale_var(), var_v=max(self.P[V][V], 0.0),
-            accel=accel(self.notch, x[V], self.model, self.grade_at(x[S])) + x[D],
+            accel=accel(self.u, x[V], self.model, self.grade_at(x[S])) + x[D],
             slip=self.slip, flags=self.flags,
             wheels_ok=front is not None or rear is not None,
             slip_ratio=self.slip_ratio if front is not None or rear is not None else 0.0,

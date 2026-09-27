@@ -8,10 +8,13 @@
     f_br = (|n|/N)·b_max·blend(v),            n < 0   электрический тормоз слабеет на малой скорости
     r(v) = A + B·v + C·v²                              сопротивление движению (формула Дэвиса)
     θ    — уклон (подъём > 0), доля: 0.01 = 1 %
+    n    — позиция контроллера после запаздывания привода: du/dt = (n_cmd - u)/τ
+           (сила нарастает не мгновенно; τ = 0 — без запаздывания)
 
 Значения по умолчанию — стартовые оценки. Настоящие параметры идентифицируются по данным
 и задаются в YAML-конфиге ноды.
 """
+import math
 from dataclasses import dataclass
 
 G = 9.81
@@ -29,6 +32,7 @@ class ModelParams:
     res_b: float = 0.0         # 1/с
     res_c: float = 0.0005      # 1/м
     v_stop: float = 0.3        # м/с, ниже сопротивление плавно уходит в ноль
+    tau_cmd: float = 0.0       # с, запаздывание силы за контроллером (0 — нет)
 
 
 def traction(notch, v, p):
@@ -50,6 +54,13 @@ def resistance(v, p):
     # а якобиан фильтра остаётся конечным
     v = max(v, 0.0)
     return (p.res_a + p.res_b * v + p.res_c * v * v) * min(1.0, v / p.v_stop)
+
+
+def lag(u, notch, dt, p):
+    """Позиция контроллера после запаздывания привода через dt."""
+    if p.tau_cmd <= 0.0:
+        return float(notch)
+    return u + (notch - u) * (1.0 - math.exp(-dt / p.tau_cmd))
 
 
 def accel(notch, v, p, grade=0.0):
