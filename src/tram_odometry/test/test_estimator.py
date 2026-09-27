@@ -225,6 +225,45 @@ def test_rover_heading_picks_track_of_travel_direction():
             assert abs(est.s - (acc - 400.0)) < 1.0                           # лицом на запад — встречный путь
 
 
+def _cruise_with_gnss(fixes, wheel_gain=1.03, t_end=70.0):
+    """Разгон до 10 м/с и ход; колёса завышают на 3 %; fixes(t, s_true) -> (x, y) фикса или None."""
+    est = make()
+    enu = Enu(*ORIGIN)
+    t, s_true, v = 0.0, 100.0, 0.0
+    while t < t_end:
+        t = round(t + 0.05, 6)
+        v = min(10.0, v + 0.5 * 0.05)
+        s_true += v * 0.05
+        est.on_cmd(t, 10 if v < 10.0 else 0)
+        if round(t / 0.05) % 2 == 0:
+            for front in (True, False):
+                est.on_wheel(t, front, v * wheel_gain * K + (0.01 if front else 0.0) * (round(t / 0.05) % 4 - 1))
+            fix = fixes(t, s_true)
+            if fix is not None:
+                est.on_gnss(t, *enu.inverse(fix[0], fix[1], 0.0))
+    return est, s_true
+
+
+def test_gnss_burst_after_init_corrects_distance():
+    burst = lambda t, s: (s, 0.0) if 60.0 <= t < 63.0 else None  # noqa: E731 — пачка 3 с на 60-й секунде
+    est, s_true = _cruise_with_gnss(burst, t_end=63.5)
+    drift, _ = _cruise_with_gnss(lambda t, s: None, t_end=63.5)
+    assert abs(drift.s - s_true) > 15.0          # без GNSS колёса +3 % увели путь
+    assert abs(est.s - s_true) < 2.0
+
+
+def test_single_gnss_jump_is_ignored():
+    jump = lambda t, s: (s + 40.0, 0.0) if abs(t - 60.0) < 0.05 else None  # noqa: E731 — один фикс на 40 м вперёд
+    est, s_true = _cruise_with_gnss(jump, wheel_gain=1.0)
+    assert abs(est.s - s_true) < 2.0
+
+
+def test_gnss_far_from_track_is_ignored():
+    aside = lambda t, s: (s + 20.0, 12.0) if 60.0 <= t < 63.0 else None  # noqa: E731 — в 12 м от пути
+    est, s_true = _cruise_with_gnss(aside, wheel_gain=1.0)
+    assert abs(est.s - s_true) < 2.0
+
+
 def test_gnss_jump_during_init_is_ignored():
     est = make()
     enu = Enu(*ORIGIN)

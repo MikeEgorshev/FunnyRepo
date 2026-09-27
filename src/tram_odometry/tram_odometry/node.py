@@ -103,9 +103,10 @@ class TramOdometryNode(Node):
             return
         t0 = time.perf_counter()
         out = self.est.on_gnss(self._stamp(msg), msg.latitude, msg.longitude, msg.altitude)
-        if out is None and self.est.ready:
-            # окно выставки закончилось — GNSS больше не нужен и в контуре не участвует
+        if out is None and self.est.ready and not self.est.p.gnss_corrections and self.gnss_sub is not None:
+            # окно выставки закончилось, коррекция выключена — GNSS больше не нужен
             self.destroy_subscription(self.gnss_sub)
+            self.gnss_sub = None
             self.get_logger().info('выставка по GNSS завершена, дальше только колёса и контроллер')
             return
         self._publish(out, msg.header.stamp, t0)

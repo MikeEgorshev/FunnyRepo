@@ -16,8 +16,10 @@
   * пропуски колёс — работает только модель; долгое расхождение с моделью — пересинхронизация;
   * команда контроллера устарела (пропуск, пачка) — модель знает ручку хуже, колёсам доверия больше.
 Положение: s -> карта линии (с отводами у конечных); на стоянке — привязка к месту регулярной
-стоянки. GNSS — только выставка в первые секунды прогона: положение по антенне master, курс на
-стоянке — по второй антенне rover (12,4 м впереди): так выбирается путь нужного направления.
+стоянки. GNSS: выставка в первые секунды прогона (положение по антенне master, курс на стоянке — по
+второй антенне rover, 12,4 м впереди: так выбирается путь нужного направления) и коррекция, если
+фиксы приходят по ходу (в проверочных прогонах — пачки по несколько секунд раз в 2–3 минуты;
+задача разрешает GNSS «для начальной выставки и коррекции»). Скорость — только колёса и модель.
 Чистый Python: нода без зависимостей.
 """
 import math
@@ -79,6 +81,13 @@ class Params:
     #   output_origin: 'frame' — как в рамке; 'start' — вычесть положение выходной точки на старте
     #   output_lever_m / output_dz_m — от антенны master до base_link: +9.873 м вперёд по пути,
     #   −3.0 м по высоте (tf антенн от организаторов)
+    gnss_corrections = True      # фиксы master после выставки поправляют путь s и масштаб колёс c
+    gnss_sigma_m = 2.0           # СКО положения по GNSS вдоль пути, м
+    gnss_min_dt_s = 1.0          # не чаще раза в столько: ошибки соседних фиксов коррелированы
+    gnss_agree_m = 3.0           # фикс в дело, только если соседний фикс (не старше 1,5 с) согласен с ним
+    gnss_lat_max_m = 6.0         # фикс дальше от пути — сбой GNSS или трамвай не на карте: не используем
+    gnss_gate_max_m = 80.0       # невязка вдоль пути больше — не используем
+    gnss_window_m = 120.0        # проекция фикса на путь ищется в окне s ± столько
     init_still_m = 3.0           # разброс точек GNSS меньше — стоим, берём медиану
     init_jump_m = 10.0           # точка дальше медианы — прыжок GNSS, если трамвай стоит
     rover_base_m = 12.436        # от master до rover по оси трамвая (tf антенн: −9,873 и +2,563 м)
@@ -122,6 +131,8 @@ class TramEstimator:
         self.origin = None                # положение выходной точки на старте (output_origin='start')
         self.init_fixes = []              # точки GNSS окна выставки в системе выхода
         self.rover_fixes = []             # (lat, lon, alt) антенны rover в окне выставки
+        self.gnss_prev = None             # (метка, невязка) предыдущего фикса после выставки
+        self.last_gnss_fix = None         # метка последней коррекции по GNSS
         self.first_input = None           # метка первого входа (для режима без GNSS)
         self.mode = None                  # None — по карте; 'relative' — GNSS на старте не было
 
@@ -133,8 +144,10 @@ class TramEstimator:
             self.enu = UtmLocal() if self.p.output_frame == 'utm_local' else Enu(lat, lon, alt)
             self.map.to_frame(self.enu)
             self.t0_gnss = stamp
-        if stamp - self.t0_gnss > self.p.init_window_s or self.mode == 'relative':
+        if self.mode == 'relative':
             return None
+        if stamp - self.t0_gnss > self.p.init_window_s:
+            return self._gnss_correction(stamp, lat, lon, alt)
         x, y, _ = self.enu.forward(lat, lon, alt)
         if self.first_xy is None:
             self.first_xy = (x, y)
@@ -161,6 +174,40 @@ class TramEstimator:
         if self.t is None or stamp > self.t:
             self.t = stamp
         return self._output(stamp)
+
+    def _gnss_correction(self, stamp, lat, lon, alt):
+        """Фикс master после выставки: привязка s (и масштаба c) к его проекции на карту.
+
+        Фильтр не перематывается к метке фикса (у части прогонов метки GNSS сдвинуты на ±1 с):
+        положение на момент фикса прогнозируется по скорости. Одиночный фикс не используется —
+        нужен соседний, согласный с ним; фикс далеко от пути (сбой или путь не на карте) отбрасывается.
+        """
+        if not self.p.gnss_corrections or not self.ready or self.t is None or abs(stamp - self.t) > 2.0:
+            return None
+        sp = self.map.active_spur
+        if sp is not None and self.s < sp['s_join'] - self.p.gnss_window_m:
+            return None
+        x, y, _ = self.enu.forward(lat, lon, alt)
+        s_pred = self.s + self.v * (stamp - self.t)
+        s_meas, dist = self.map.locate_near(x, y, s_pred, self.p.gnss_window_m)
+        if dist > self.p.gnss_lat_max_m:
+            self.gnss_prev = None
+            return None
+        nu = s_meas - s_pred
+        prev, self.gnss_prev = self.gnss_prev, (stamp, nu)
+        if prev is None or stamp - prev[0] > 1.5 or abs(nu - prev[1]) > self.p.gnss_agree_m:
+            return None
+        if abs(nu) > self.p.gnss_gate_max_m or (
+                self.last_gnss_fix is not None and stamp - self.last_gnss_fix < self.p.gnss_min_dt_s):
+            return None
+        S = self.P[0][0] + self.p.gnss_sigma_m ** 2
+        K = [self.P[0][0] / S, 0.0, 0.0, self.P[3][0] / S]
+        self.s += K[0] * nu
+        self.c = max(-self.p.scale_max, min(self.p.scale_max, self.c + K[3] * nu))
+        self._joseph(K, (1.0, 0.0, 0.0, 0.0), self.p.gnss_sigma_m ** 2)
+        self.last_gnss_fix = stamp
+        self.d_since_fix = 0.0
+        return None
 
     def on_gnss_rover(self, stamp, lat, lon, alt):
         """Антенна rover в окне выставки. False — окно прошло, подписку можно снять."""
