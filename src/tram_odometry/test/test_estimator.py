@@ -436,3 +436,17 @@ def test_primary_brings_relative_odometry_onto_the_map():
     out = est.on_cmd(20.05, 0)
     assert out['frame'] == 'map' and abs(est.s - 700.0) < 1.0
     assert math.hypot(out['x'] - x, out['y'] - y) < 1.0
+
+
+def test_primary_off_the_map_is_tried_at_most_once_a_second():
+    est, _ = _cruise_with_primary(primary_sync=True)
+    x, y, yaw = _primary_pose(est, 2000.0, 500.0, 2010.0, 500.0)   # в 500 м от пути: депо, не карта
+    s, calls = est.s, []
+    locate = est.map.locate_start
+    est.map.locate_start = lambda *a, **k: calls.append(1) or locate(*a, **k)
+    for i in range(50):                                              # 1 с сообщений по 50 Гц
+        t = est.t + 0.02
+        est.on_gnss(t, *Enu(*ORIGIN).inverse(2000.0, 500.0, 0.0))
+        est.on_primary(t, x, y, yaw)
+        est.on_cmd(t, 0)
+    assert len(calls) <= 2 and abs(est.s - s) < 30.0                # один поиск (два направления), путь не сорван

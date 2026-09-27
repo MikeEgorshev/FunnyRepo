@@ -253,6 +253,7 @@ class TramEstimator:
             return None
         if self.mode is None and self.t0_gnss is not None and stamp - self.t0_gnss <= p.init_window_s:
             return None
+        self.last_primary = stamp         # и неудачная попытка — не чаще раза в primary_min_dt_s: поиск по карте дорогой
         if self.enu is None:
             self.enu = UtmLocal()
             self.map.to_frame(self.enu)
@@ -269,7 +270,7 @@ class TramEstimator:
                 self.s += K[0] * nu
                 self.c = max(-p.scale_max, min(p.scale_max, self.c + K[3] * nu))
                 self._joseph(K, (1.0, 0.0, 0.0, 0.0), p.primary_sigma_m ** 2)
-                self.last_primary, self.d_since_fix = stamp, 0.0
+                self.d_since_fix = 0.0
                 return None
         # перепривязка: вагон передом по направлению пути (facing +1) или задом — как на выезде из тупика
         spur0, best = self.map.active_spur, None
@@ -287,7 +288,7 @@ class TramEstimator:
         for i in range(1, 4):
             self.P[0][i] = self.P[i][0] = 0.0
         self.P[0][0] = max(p.primary_sigma_m ** 2, dist * dist)
-        self.last_primary, self.d_since_fix = stamp, 0.0
+        self.d_since_fix = 0.0
         if self.mode == 'relative' or not self.ready:
             self.mode, self.ready = None, True
             # фиксы после этого — коррекция по ходу, а не новая выставка
