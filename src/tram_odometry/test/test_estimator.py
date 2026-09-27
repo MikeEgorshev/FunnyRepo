@@ -87,6 +87,21 @@ def test_rejects_slip_of_both_bogies():
     assert abs(out['s'] - 200.0) < 3.0
 
 
+def test_single_spikes_after_slip_do_not_move_speed():
+    est = make()
+    slip = lambda t, v: v + 2.0 if 8.0 < t < 9.5 else v  # noqa: E731 — буксование обеих тележек
+    junk = {10.0: 0.0, 10.5: 3.0, 11.0: 30.0 / K}           # выбросы передней: ноль, ×3, +30 км/ч
+
+    def front(t, v):
+        for tj, val in junk.items():
+            if abs(t - tj) < 1e-6:
+                return val if val != 3.0 else v * 3.0
+        return slip(t, v)
+    errors = []
+    drive(est, 14.0, lambda t: 0.5 * t, front=front, rear=slip, errors=errors)
+    assert max(errors[95:]) < 0.5
+
+
 def test_dead_front_sensor_reading_zero_under_traction():
     est = make()
     dead = lambda t, v: 0.0 if 6.0 < t < 16.0 else v  # noqa: E731 — передний датчик на ходу показывает 0

@@ -54,6 +54,7 @@ class Params:
     slip_recover_s = 3.0         # столько после буксования резкий спад колеса — возврат к скорости трамвая, а не юз
     slip_max_s = 8.0             # дольше не исключаем (в данных эпизоды до 15 с, 90 % — до 9 с), с
     a_phys = 8.0                 # |ускорение колеса| больше — скачок показания, отказ датчика, м/с²
+    spike_max = 10               # столько скачков подряд — не выбросы, а новый уровень показаний
     a_trac_max = 2.0             # трамвай не разгоняется быстрее, м/с² ...
     a_brake_max = 5.0            # ... и не тормозит быстрее (экстренное торможение), м/с²: согласные тележки
                                  #   с ускорением в этих пределах — правда, а не проскальзывание
@@ -111,6 +112,7 @@ class TramEstimator:
         self.hist = {True: deque(maxlen=32), False: deque(maxlen=32)}  # (метка, скорость) по тележке
         self.bad = {True: None, False: None}  # тележка исключена: (с какого момента, 'slip' | 'skid' | 'fail')
         self.last_slip = None             # когда последний раз буксовала любая тележка
+        self.spikes = {True: 0, False: 0}  # выбросов подряд по тележке
         self.reject_since = None
         self.stop_since = None
         self.snapped = False
@@ -215,11 +217,15 @@ class TramEstimator:
             self._stop_logic(stamp)
             return self._output(stamp)
         z = kmh / self.p.wheel_kmh_per_mps / (1.0 + self.c)  # скорость по тележке с поправкой масштаба
-        self.last_wheel[front] = (stamp, z)
         other = self.last_wheel[not front]
         agree = (other is not None and abs(other[0] - stamp) <= self.p.bogie_pair_s and
                  abs(z - other[1]) <= max(self.p.bogie_tol_abs, self.p.bogie_tol_rel * max(z, other[1], self.v)))
         kind = self._bogie_bad(front, stamp, z, agree)
+        if kind == 'spike':  # одиночный выброс: не используем и не запоминаем
+            self.slip = True
+            self._stop_logic(stamp)
+            return self._output(stamp)
+        self.last_wheel[front] = (stamp, z)
         if kind == 'recover':
             self._speed_update(stamp, z, gate=False)
         elif kind is None:
@@ -301,7 +307,10 @@ class TramEstimator:
         return not suspect
 
     def _bogie_bad(self, front, stamp, z, agree):
-        """Тележка проскальзывает или отказала: None — всё в порядке, иначе 'slip', 'skid' или 'fail'.
+        """Тележка проскальзывает или отказала: None — всё в порядке, иначе 'spike', 'slip', 'skid', 'fail'.
+
+        Выброс (spike): скачок от прошлого показания этой тележки быстрее физически возможного, и вторая
+        тележка его не подтверждает. Выброс не попадает ни в фильтр, ни в историю тележки.
 
         Буксование (slip): колесо разгоняется быстрее, чем позволяет модель тяги, и уже ушло от
         прогноза вверх; юз (skid) — тормозит быстрее модели торможения и ушло вниз. Отказ (fail):
@@ -311,6 +320,12 @@ class TramEstimator:
         которое согласование тележек не видит.
         """
         hist = self.hist[front]
+        if hist and not agree and self.spikes[front] < self.p.spike_max:
+            t_prev, z_prev = hist[-1]
+            if abs(z - z_prev) > self.p.a_phys * max(stamp - t_prev, 0.0) + self.p.slip_dv:
+                self.spikes[front] += 1
+                return 'spike'
+        self.spikes[front] = 0
         hist.append((stamp, z))
         while len(hist) > 2 and stamp - hist[1][0] >= self.p.slip_win_s:
             hist.popleft()
@@ -333,7 +348,7 @@ class TramEstimator:
         a_m = self.model.accel(u, self.v) + self.d
         dv = z - self.v
         recent_slip = self.last_slip is not None and stamp - self.last_slip < self.p.slip_recover_s
-        if recent_slip and a_w < 0 and dv < -self.p.slip_dv:
+        if recent_slip and agree and a_w < 0 and dv < -self.p.slip_dv:
             # колесо после буксования падает к скорости трамвая, а прогноз утянут буксованием вверх
             return 'recover'
         # фильтр успевает подтянуться за колесом: при большом избытке ускорения отход от прогноза не нужен
