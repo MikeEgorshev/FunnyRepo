@@ -5,6 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -17,6 +18,7 @@ def generate_launch_description():
             executable='tram_odometry_node',
             name='tram_odometry',
             output='screen',
-            parameters=[params, {'vehicle_id': LaunchConfiguration('vehicle_id')}],
+            # строкой явно: иначе vehicle_id:=30618 приходит целым числом и нода падает на типе параметра
+            parameters=[params, {'vehicle_id': ParameterValue(LaunchConfiguration('vehicle_id'), value_type=str)}],
         ),
     ])
