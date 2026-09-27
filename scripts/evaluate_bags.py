@@ -113,12 +113,22 @@ def load_params(path):
     return make(ModelParams, 'model'), make(FilterParams, 'filter')
 
 
-def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None, corrections=False):
-    """Выходы оценщика: [(метка, v, x, y, z, yaw, frame, проскальзывание)]."""
+def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None, corrections=False,
+           timer_hz=None, max_extrapolation_s=0.2):
+    """Выходы оценщика: [(метка, v, x, y, z, yaw, frame, проскальзывание)].
+
+    timer_hz=None — выход после каждого входа с его меткой. timer_hz=25 — как в ноде: выход на
+    сетке меток через state_at() (прогноз вперёд не дольше max_extrapolation_s); так офлайн-оценка
+    ловит и то, что бывает только при публикации по таймеру."""
     fparams = fparams or FilterParams(k0=k)
     est = Estimator(model=model or ModelParams(), params=fparams)
     pos = Positioner(route, window_s, corrections=corrections)
     stops, resets, out, last_out = None, 0, [], None
+    tick, last_in = None, None
+
+    def emit(t, st):
+        x, y, z, yaw, frame = pos.pose(st.s)
+        out.append((t, st.v, x, y, z, yaw, frame, st.slip))
 
     def use_track():
         est.grade_at = getattr(pos.track, 'grade_at', None) or (lambda s: 0.0)
@@ -130,6 +140,15 @@ def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None,
         if topic in (MASTER, ROVER):
             pos.fix(t, m.latitude, m.longitude, m.altitude, m.status.status, topic == ROVER)
             continue
+        if topic not in (CMD, FRONT, REAR):
+            continue
+        if timer_hz:
+            tick = t if tick is None else tick
+            while tick < t:                   # тики таймера до этого входа
+                if last_in is not None and tick - last_in <= max_extrapolation_s:
+                    emit(tick, est.state_at(tick))
+                tick += 1.0 / timer_hz
+            last_in = t if last_in is None else max(last_in, t)
         if topic == CMD:
             est.set_notch(t, int(m.position))
         elif topic in (FRONT, REAR):
@@ -144,12 +163,10 @@ def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None,
             stops = use_track()
         if stops is not None and topic in (FRONT, REAR):
             stops.update(t, est)
-        if last_out is not None and t < last_out:
+        if timer_hz or (last_out is not None and t < last_out):
             continue                          # метки выхода не убывают, как у ноды
         last_out = t
-        st = est.state()
-        x, y, z, yaw, frame = pos.pose(st.s)
-        out.append((t, st.v, x, y, z, yaw, frame, st.slip))
+        emit(t, est.state())
     return out
 
 
@@ -192,6 +209,7 @@ def main():
     ap.add_argument('--k', type=float, default=3.5966)
     ap.add_argument('--params', default=None, help='YAML параметров ноды (fit_model.py): модель и k0')
     ap.add_argument('--gnss-corrections', action='store_true', help='фиксы после выставки -> привязки дистанции')
+    ap.add_argument('--timer-hz', type=float, default=None, help='выход по таймеру, как в ноде (например, 25)')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     route = RouteTrack.load(args.route_map, MgrsLocal(), args.stops) if args.route_map else None
@@ -201,7 +219,7 @@ def main():
         ref_pos, ref_vel = reference(events)
         model, fparams = load_params(args.params) if args.params else (None, None)
         row = {'bag': Path(bag).name, **metrics(replay(events, route, args.k, model=model, fparams=fparams,
-                                                        corrections=args.gnss_corrections),
+                                                        corrections=args.gnss_corrections, timer_hz=args.timer_hz),
                                                  ref_pos, ref_vel)}
         rows.append(row)
         print(' '.join(f'{k}={v:.3f}' if isinstance(v, float) else f'{k}={v}' for k, v in row.items()))
