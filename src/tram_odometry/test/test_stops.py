@@ -18,7 +18,7 @@ def test_stop_fixes_bound_drift_and_learn_the_wheel_scale():
     events, truth = run(Scenario(k=3.63, duration=480.0))      # k фильтра ошибается на 0,9 %
     stops = [(truth[int((80 * c + 79) / 0.01)][1], 1.0) for c in range(6)]
     plain, fixed = Estimator(), Estimator()
-    fixer = StopFixer(stops)
+    fixer = StopFixer(stops, params=StopParams(min_sigma_m=1.0))   # места стоянок точные, до 1 м
     _replay(events, plain)
     _replay(events, fixed, fixer)
     s_true = truth[-1][1]

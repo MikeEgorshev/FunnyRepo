@@ -51,7 +51,7 @@ tram_odometry:
       r_wheel: 0.15                # км/ч
       gate: 9.0                    # χ², 3σ
       flag_after: 3
-      reject_max_s: 3.0
+      reject_max_s: 6.0            # с, дольше подряд на одной модели не едем
       r_recover: 3.0
       zupt_speed: 0.1
       zupt_max_est: 1.0
@@ -70,7 +70,7 @@ tram_odometry:
       gate_sigma: 3.0
       gate_min_m: 5.0
       gate_max_m: 80.0
-      min_sigma_m: 1.0
+      min_sigma_m: 3.0             # м, разброс места остановки у платформы
 
     slip:
       consistency_abs: 0.3         # м/с
