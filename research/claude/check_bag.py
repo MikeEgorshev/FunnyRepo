@@ -6,6 +6,7 @@ ApproximateTimeSynchronizer), RMSE и максимум модуля ошибки
 
 Запуск: python check_bag.py [путь к папке bag]  ->  сводка в консоль и out/check_<bag>.png
 """
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +47,7 @@ def load(path):
 
 
 def main(path):
+    os.environ.setdefault('TRAM_GNSS', 'all')  # GNSS проверочного прогона — как есть, он уже пачками
     d = load(path)
     bag = path.name
     ref = d[REF]

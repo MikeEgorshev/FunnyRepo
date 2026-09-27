@@ -47,7 +47,8 @@ class EkfAdapter:
         p.output_frame, p.output_lever_m, p.output_dz_m = 'utm_local', -MASTER_X, -ANT_Z
         for kv in filter(None, os.environ.get('TRAM_PARAMS', '').split(',')):  # подбор: TRAM_PARAMS=sigma_u=0.2,...
             key, value = kv.split('=')
-            setattr(p, key, type(getattr(Params, key))(value))
+            kind = type(getattr(Params, key))
+            setattr(p, key, value.lower() in ('1', 'true', 'yes') if kind is bool else kind(value))
         self.est = TramEstimator(m, TractionModel.load(TRACTION), stops, p)
         self.map = m
 
@@ -81,11 +82,33 @@ def make_estimator(name, bag_id, per_vehicle):
     raise ValueError(f'неизвестный оценщик {name}')
 
 
+GNSS_INIT_S, GNSS_EVERY_S, GNSS_BURST_S = 21.0, 150.0, 2.0
+
+
+def gnss_schedule(a, mode=None):
+    """Прореживание GNSS прогона датасета под проверку (TRAM_GNSS).
+
+    'bursts' (по умолчанию) — как в проверочном прогоне организаторов 30618_88aea4d9: первые
+    21 с, дальше пачки по 2 с раз в 150 с; 'init' — только первые 21 с; 'all' — всё.
+    Без этого коррекция по GNSS на датасете (GNSS есть всё время) дала бы нечестную точность.
+    """
+    mode = mode or os.environ.get('TRAM_GNSS', 'bursts')
+    if a is None or mode == 'all' or not len(a):
+        return a
+    t = a[:, 1] - a[0, 1]
+    keep = t <= GNSS_INIT_S
+    if mode == 'bursts':
+        keep |= (t > GNSS_INIT_S) & ((t - GNSS_INIT_S) % GNSS_EVERY_S >= GNSS_EVERY_S - GNSS_BURST_S)
+    return a[keep]
+
+
 def replay(est, d):
     """События в порядке времени записи bag -> массив выходов [stamp, v, x, y, z, s]."""
     events = []
     for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g'), (GNSS_FIX['rover'], 'R')):
         a = d.get(topic)
+        if kind in 'gR':
+            a = gnss_schedule(a)
         if a is not None and (kind != 'R' or hasattr(est, 'on_gnss_rover')):
             events += [(row[0], kind, row) for row in a]
     events.sort(key=lambda e: e[0])

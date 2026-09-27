@@ -123,6 +123,51 @@ class RouteMap:
         yaw = math.atan2(sp['y'][i + 1] - sp['y'][i], sp['x'][i + 1] - sp['x'][i])
         return pos[0], pos[1], pos[2], yaw
 
+    def locate_near(self, x, y, s0, window):
+        """Ближайшая к (x, y) точка пути в окне s0 ± window -> (s, расстояние до пути).
+
+        Для коррекции по GNSS на ходу: ищем только рядом с текущей оценкой, чтобы не перескочить
+        на путь встречного направления или другой участок кольца. Пока трамвай на отводе старта
+        (s < s_join), учитывается и отвод; s возвращается развёрнутой рядом с s0.
+        """
+        best = (float('inf'), s0)
+        sp = self.active_spur
+        if sp is not None and s0 - window < sp['s_join']:
+            total = sp['d'][-1]
+            for i in range(len(sp['d']) - 1):
+                dx, dy = sp['x'][i + 1] - sp['x'][i], sp['y'][i + 1] - sp['y'][i]
+                seg2 = dx * dx + dy * dy
+                if seg2 == 0.0:
+                    continue
+                t = max(0.0, min(1.0, ((x - sp['x'][i]) * dx + (y - sp['y'][i]) * dy) / seg2))
+                d = math.hypot(x - sp['x'][i] - t * dx, y - sp['y'][i] - t * dy)
+                s = sp['s_join'] - (total - (sp['d'][i] + t * (sp['d'][i + 1] - sp['d'][i])))
+                if d < best[0] and abs(s - s0) <= window:
+                    best = (d, s)
+        L, n = self.length, len(self.s)
+        c = s0 % L
+        lo, hi = c - window, c + window
+        if lo < 0:
+            ranges = [(bisect.bisect_left(self.s, lo + L), n), (0, bisect.bisect_right(self.s, hi))]
+        elif hi > L:
+            ranges = [(bisect.bisect_left(self.s, lo), n), (0, bisect.bisect_right(self.s, hi - L))]
+        else:
+            ranges = [(max(0, bisect.bisect_left(self.s, lo) - 1), bisect.bisect_right(self.s, hi))]
+        for a, b in ranges:
+            for i in range(a, b):
+                j = (i + 1) % n
+                dx, dy = self.x[j] - self.x[i], self.y[j] - self.y[i]
+                seg2 = dx * dx + dy * dy
+                if seg2 == 0.0:
+                    continue
+                t = max(0.0, min(1.0, ((x - self.x[i]) * dx + (y - self.y[i]) * dy) / seg2))
+                d = math.hypot(x - self.x[i] - t * dx, y - self.y[i] - t * dy)
+                if d < best[0]:
+                    s_next = self.s[j] if j else L
+                    s = self.s[i] + t * (s_next - self.s[i])
+                    best = (d, s + L * round((s0 - s) / L))
+        return best[1], best[0]
+
     def locate(self, x, y, yaw=None, max_yaw_diff=math.radians(60)):
         """Ближайшая к (x, y) точка маршрута -> (s, расстояние до маршрута).
 
