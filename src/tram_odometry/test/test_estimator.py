@@ -293,11 +293,13 @@ def _stub_route():
     return route
 
 
-def _stop_after(distance):
+def _stop_after(distance, **over):
     """Трамвай от x = 900 на запад по пути прибытия, встаёт через distance м -> выход и оценщик."""
     p = Params()
     p.wheel_kmh_per_mps = K
     p.output_frame = 'enu'
+    for k, v in over.items():
+        setattr(p, k, v)
     est = TramEstimator(_stub_route(), flat_model(), [(50.0, 0.5)], p)
     la, lo, al = Enu(*ORIGIN).inverse(900.0, 0.0, 0.0)
     est.on_gnss(0.0, la, lo, al)
@@ -363,3 +365,74 @@ def test_predict_output_extrapolates_without_changing_the_filter():
     assert (est.s, est.v, est.t) == (s, v, t)      # сам фильтр не сдвинулся
     assert est.predict_output(t - 0.5) is None     # назад не прогнозируем
     assert out['stamp'] == last and est.last_out == t + 1.0
+
+
+def _primary_pose(est, e, n, e_ahead, n_ahead):
+    """Положение base_link от основного вычислителя: точка ENU (e, n) и курс на (e_ahead, n_ahead) в сетке выхода."""
+    enu = Enu(*ORIGIN)
+    x, y, _ = est.enu.forward(*enu.inverse(e, n, 0.0))
+    xa, ya, _ = est.enu.forward(*enu.inverse(e_ahead, n_ahead, 0.0))
+    return x, y, math.atan2(ya - y, xa - x)
+
+
+def _cruise_with_primary(gnss=True, **over):
+    """Разгон до 10 м/с, колёса завышают на 3 %; на 60–63 с основной вычислитель шлёт истинный base_link.
+
+    GNSS в эти секунды «есть», но фиксы в 12 м от пути: сами по себе они s не поправляют.
+    """
+    est = make(**over)
+    enu = Enu(*ORIGIN)
+    t, s_true, v = 0.0, 100.0, 0.0
+    while t < 63.5:
+        t = round(t + 0.05, 6)
+        v = min(10.0, v + 0.5 * 0.05)
+        s_true += v * 0.05
+        est.on_cmd(t, 10 if v < 10.0 else 0)
+        if round(t / 0.05) % 2 == 0:
+            for front in (True, False):
+                est.on_wheel(t, front, v * 1.03 * K + (0.01 if front else 0.0) * (round(t / 0.05) % 4 - 1))
+            if 60.0 <= t < 63.0:
+                if gnss:
+                    est.on_gnss(t, *enu.inverse(s_true, 12.0, 0.0))
+                est.on_primary(t, *_primary_pose(est, s_true + 9.873, 0.0, s_true + 20.0, 0.0))
+    return est, s_true
+
+
+def test_primary_corrects_distance_while_gnss_is_on():
+    est, s_true = _cruise_with_primary(primary_sync=True)
+    assert abs(est.s - s_true) < 0.5
+    assert est.c > 0.001                                   # и масштаб колёс сдвинулся к +3 %
+
+
+def test_primary_is_ignored_without_gnss_or_when_disabled():
+    for gnss, sync in ((False, True), (True, False)):
+        est, s_true = _cruise_with_primary(gnss=gnss, primary_sync=sync)
+        assert abs(est.s - s_true) > 15.0                  # колёса +3 % увели путь, поправки не было
+
+
+def test_primary_moves_into_the_stub_the_filter_did_not_see():
+    """Встали в 70 м за развилкой: фильтр держит петлю; основной видит трамвай в тупике передом к упору."""
+    est, out = _stop_after(500.0 + 70.0, output_frame='utm_local', primary_sync=True)
+    t = est.t + 0.05
+    est.on_gnss(t, *Enu(*ORIGIN).inverse(312.2, 47.9, 0.0))     # GNSS снова есть
+    x, y, yaw = _primary_pose(est, 312.2, 47.9, 312.2 - 11.0, 47.9 + 6.0)
+    est.on_primary(t, x, y, yaw)
+    out = est.on_cmd(t + 0.05, 0)
+    assert est.map.active_spur is not None and est.facing == -1.0
+    assert math.hypot(out['x'] - x, out['y'] - y) < 1.0
+    assert math.cos(out['yaw'] - yaw) > 0.99
+
+
+def test_primary_brings_relative_odometry_onto_the_map():
+    p = Params()
+    p.wheel_kmh_per_mps = K
+    p.primary_sync = True
+    est = TramEstimator(straight_map(), flat_model(), [], p)  # GNSS на старте не было
+    out = drive(est, 20.0, lambda t: 5.0)
+    assert out['frame'] == 'odom'
+    est.on_gnss(20.02, *Enu(*ORIGIN).inverse(700.0, 0.0, 0.0))  # GNSS включился
+    x, y, yaw = _primary_pose(est, 709.873, 0.0, 720.0, 0.0)
+    est.on_primary(20.03, x, y, yaw)
+    out = est.on_cmd(20.05, 0)
+    assert out['frame'] == 'map' and abs(est.s - 700.0) < 1.0
+    assert math.hypot(out['x'] - x, out['y'] - y) < 1.0
