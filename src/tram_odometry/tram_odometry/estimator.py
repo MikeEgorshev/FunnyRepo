@@ -452,6 +452,20 @@ class TramEstimator:
         self.d_since_fix = 0.0
 
     # --- выход -------------------------------------------------------------------------------
+    def predict_output(self, stamp):
+        """Выход на момент stamp по модели, фильтр не меняется.
+
+        Для публикации, когда все входы молчат: судье нужен выход не реже 10 Гц,
+        а в данных все три потока пропадают вместе примерно на секунду.
+        """
+        if not self.ready or self.t is None or stamp <= self.t:
+            return None
+        saved = (self.s, self.v, self.d, [row[:] for row in self.P], self.t, self.d_since_fix)
+        self._advance(stamp)
+        out = self._output(stamp)
+        self.s, self.v, self.d, self.P, self.t, self.d_since_fix = saved
+        return out
+
     def _output(self, stamp):
         if not self.ready or (self.last_out is not None and stamp < self.last_out):
             return None
