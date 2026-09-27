@@ -22,6 +22,7 @@ import numpy as np
 
 from bagio import CMD, FRONT, GNSS_FIX, GNSS_VEL, MAP_DIR, REAR, bag_ids, load_cached
 from tram_odometry.geo import UtmLocal
+from tram_odometry.integrated import IntegratedEstimator
 
 OUT = Path(__file__).parent / 'out'
 MAP = MAP_DIR / 'route.csv'
@@ -72,6 +73,113 @@ class EkfAdapter:
         self.est.on_primary(*a)
 
 
+class IntegratedAdapter:
+    """IntegratedEstimator из PR #12-14 с интерфейсом оценщиков research."""
+
+    def __init__(self, vehicle, gnss_corrections=False):
+        from baseline import KMH_PER_MPS
+        from tram_odometry.estimator import Params, load_stops
+        from tram_odometry.integrated import IntegratedEstimator
+        from tram_odometry.integrated_model import IntegratedModel
+        from tram_odometry.model import TractionModel
+        from tram_odometry.route_map import RouteMap
+        m = RouteMap.load(MAP)
+        if (MAP_DIR / 'route_spurs.csv').exists():
+            m.load_spurs(MAP_DIR / 'route_spurs.csv')
+        stops = load_stops(MAP_DIR / 'route_stops.csv') if (MAP_DIR / 'route_stops.csv').exists() else []
+        p = Params()
+        p.wheel_kmh_per_mps = KMH_PER_MPS.get(vehicle, KMH_PER_MPS['default'])
+        p.gnss_corrections = gnss_corrections
+        for kv in filter(None, os.environ.get('TRAM_PARAMS', '').split(',')):
+            key, value = kv.split('=')
+            kind = type(getattr(Params, key))
+            setattr(p, key, value.lower() in ('1', 'true', 'yes') if kind is bool else kind(value))
+        base_model = TractionModel.load(TRACTION)
+        model = IntegratedModel(base_model.v_nodes, base_model.rows, delay_s=0.4)
+        self.est = IntegratedEstimator(m, model, stops, p)
+        self.map = m
+
+    @staticmethod
+    def _t(r):
+        return None if r is None else (r['stamp'], r['v'], r['x'], r['y'], r['z'], r['s'])
+
+    def on_gnss(self, *a):
+        return self._t(self.est.on_gnss(*a))
+
+    def on_wheel(self, *a):
+        return self._t(self.est.on_wheel(*a))
+
+    def on_cmd(self, *a):
+        return self._t(self.est.on_cmd(*a))
+
+    def on_gnss_rover(self, *a):
+        self.est.on_gnss_rover(*a)
+
+    def on_primary(self, *a):
+        self.est.on_primary(*a)
+
+
+class HybridEstimator(IntegratedEstimator):
+    """Комбинация: каузальная динамика и адаптация тяги PR #12 + EKF коррекция позиции и масштаба колес."""
+
+    def __init__(self, route_map, model, stops=(), params=None):
+        super().__init__(route_map, model, stops, params)
+        # 40 мс задержка согласования с таймингами эталона организаторов
+        self.p.output_v_delay_s = 0.040
+
+    def _enter_stub(self):
+        # Штатный выбор отвода из TramEstimator Майка
+        return super(IntegratedEstimator, self)._enter_stub()
+
+    def _snap(self):
+        # Штатный snap остановок из TramEstimator Майка
+        return super(IntegratedEstimator, self)._snap()
+
+    def _gnss_correction(self, stamp, lat, lon, alt):
+        if not self.p.gnss_corrections or not self.ready or self.t is None or abs(stamp - self.t) > 2.0:
+            return None
+        # Вызываем EKF коррекцию s и c из TramEstimator (не трогает v)
+        return super(IntegratedEstimator, self)._gnss_correction(stamp, lat, lon, alt)
+
+    def _output(self, stamp):
+        out = super(IntegratedEstimator, self)._output(stamp)
+        if out is not None:
+            if self.mode != 'relative':
+                x, y, z, yaw = self.map.pose(self.s)
+                heading = yaw if self.facing > 0 else math.atan2(-math.sin(yaw), -math.cos(yaw))
+                out.update(x=x + self.p.output_lever_m * math.cos(heading),
+                           y=y + self.p.output_lever_m * math.sin(heading),
+                           z=z + self.p.output_dz_m, yaw=heading)
+            out['traction_gain'] = getattr(self.model, 'traction_gain', 1.0)
+        return out
+
+
+class HybridAdapter(IntegratedAdapter):
+    """Адаптер для HybridEstimator."""
+
+    def __init__(self, vehicle):
+        from baseline import KMH_PER_MPS
+        from tram_odometry.estimator import Params, load_stops
+        from tram_odometry.integrated_model import IntegratedModel
+        from tram_odometry.model import TractionModel
+        from tram_odometry.route_map import RouteMap
+        m = RouteMap.load(MAP)
+        if (MAP_DIR / 'route_spurs.csv').exists():
+            m.load_spurs(MAP_DIR / 'route_spurs.csv')
+        stops = load_stops(MAP_DIR / 'route_stops.csv') if (MAP_DIR / 'route_stops.csv').exists() else []
+        p = Params()
+        p.wheel_kmh_per_mps = KMH_PER_MPS.get(vehicle, KMH_PER_MPS['default'])
+        p.gnss_corrections = True
+        for kv in filter(None, os.environ.get('TRAM_PARAMS', '').split(',')):
+            key, value = kv.split('=')
+            kind = type(getattr(Params, key))
+            setattr(p, key, value.lower() in ('1', 'true', 'yes') if kind is bool else kind(value))
+        base_model = TractionModel.load(TRACTION)
+        model = IntegratedModel(base_model.v_nodes, base_model.rows, delay_s=0.4)
+        self.est = HybridEstimator(m, model, stops, p)
+        self.map = m
+
+
 def make_estimator(name, bag_id, per_vehicle):
     vehicle = bag_id.split('_')[0] if per_vehicle else 'default'
     if name == 'baseline':
@@ -82,6 +190,12 @@ def make_estimator(name, bag_id, per_vehicle):
         return MapStopsEstimator(MAP, vehicle_id=vehicle)
     if name == 'ekf':
         return EkfAdapter(vehicle)
+    if name == 'integrated':
+        return IntegratedAdapter(vehicle, gnss_corrections=False)
+    if name == 'integrated_gnss':
+        return IntegratedAdapter(vehicle, gnss_corrections=True)
+    if name == 'hybrid':
+        return HybridAdapter(vehicle)
     raise ValueError(f'неизвестный оценщик {name}')
 
 

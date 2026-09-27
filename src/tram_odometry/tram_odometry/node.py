@@ -51,6 +51,8 @@ def _guarded(fn):
 class TramOdometryNode(Node):
     RESET_BACK_S = 5.0   # метки колёс и ручки ушли назад дальше этого — bag проигрывают заново
     RESET_BACK_N = 10    # ... подряд столько входов: одиночная битая метка оценщик не сбрасывает
+    estimator_type = TramEstimator
+    model_type = TractionModel
 
     def __init__(self):
         super().__init__('tram_odometry')
@@ -100,7 +102,7 @@ class TramOdometryNode(Node):
         self.create_subscription(DriverControllerCommand, '/vehicle/driver_position_cmd', self._cmd, qos_in)
         self.gnss_sub = self.create_subscription(NavSatFix, '/sensing/gnss/master/fix', self._gnss, qos_in)
         self.rover_sub = self.create_subscription(NavSatFix, '/sensing/gnss/rover/fix', self._rover, qos_in)
-        if p.primary_sync:  # только в эксплуатации: входы по задаче — ручка, тележки и GNSS
+        if self.est.p.primary_sync:  # integrated estimator always disables this input
             self.create_subscription(Odometry, get('primary_topic'), self._primary, qos_in)
         self.pub_v = self.create_publisher(VelocitySensor, '/result/velocity', 10)
         self.pub_p = self.create_publisher(Odometry, '/result/position', 10)
@@ -120,8 +122,8 @@ class TramOdometryNode(Node):
         if os.path.exists(get('spurs_file')):
             route.load_spurs(get('spurs_file'))
         stops = load_stops(get('stops_file')) if os.path.exists(get('stops_file')) else []
-        model = TractionModel.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
-        return TramEstimator(route, model, stops, copy.copy(self.params))
+        model = self.model_type.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
+        return self.estimator_type(route, model, stops, copy.copy(self.params))
 
     def _reset(self, stamp):
         """Новый прогон без перезапуска ноды: всё как при старте — выставка по GNSS в первые секунды."""
@@ -233,6 +235,9 @@ class TramOdometryNode(Node):
         var_s = float(out['var_s'])
         cov = [0.0] * 36
         cov[0] = cov[7] = var_s + 0.25   # x, y: неопределённость вдоль пути + точность карты
+        if hasattr(self, 'position_covariance'):
+            cov[0], cov[1], cov[7] = self.position_covariance
+            cov[6] = cov[1]
         cov[14] = 1.0                    # z
         cov[21] = cov[28] = 1e3          # крен, тангаж не оцениваем
         cov[35] = 0.01                   # курс по карте

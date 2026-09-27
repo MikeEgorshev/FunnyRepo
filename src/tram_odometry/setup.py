@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'tram_odometry_node = tram_odometry.node:main',
+            'integrated_odometry_node = tram_odometry.integrated_node:main',
+            'hybrid_odometry_node = tram_odometry.hybrid_node:main',
         ],
     },
 )
