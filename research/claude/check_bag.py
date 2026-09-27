@@ -5,7 +5,10 @@
 ApproximateTimeSynchronizer), RMSE и максимум модуля ошибки: скорость (twist.linear.x), x, y, z и 3D.
 
 Запуск: python check_bag.py [путь к папке bag]  ->  сводка в консоль и out/check_<bag>.png
+TRAM_PARAMS=primary_sync=1 — эталон подаётся и как положение основного вычислителя (поправка, пока есть GNSS);
+TRAM_GNSS=late — GNSS первые 60 с нет.
 """
+import math
 import os
 import sys
 from pathlib import Path
@@ -38,8 +41,9 @@ def load(path):
             elif conn.topic.endswith('/fix'):
                 row += [m.latitude, m.longitude, m.altitude, m.status.status]
             elif conn.topic == REF:
-                p, v = m.pose.pose.position, m.twist.twist.linear
-                row += [p.x, p.y, p.z, v.x, v.y]
+                p, v, q = m.pose.pose.position, m.twist.twist.linear, m.pose.pose.orientation
+                yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+                row += [p.x, p.y, p.z, v.x, v.y, yaw]
             else:
                 continue
             out.setdefault(conn.topic, []).append(row)

@@ -68,6 +68,9 @@ class EkfAdapter:
     def on_gnss_rover(self, *a):
         self.est.on_gnss_rover(*a)
 
+    def on_primary(self, *a):
+        self.est.on_primary(*a)
+
 
 def make_estimator(name, bag_id, per_vehicle):
     vehicle = bag_id.split('_')[0] if per_vehicle else 'default'
@@ -89,26 +92,39 @@ def gnss_schedule(a, mode=None):
     """Прореживание GNSS прогона датасета под проверку (TRAM_GNSS).
 
     'bursts' (по умолчанию) — как в проверочном прогоне организаторов 30618_88aea4d9: первые
-    21 с, дальше пачки по 2 с раз в 150 с; 'init' — только первые 21 с; 'all' — всё.
+    21 с, дальше пачки по 2 с раз в 150 с; 'init' — только первые 21 с; 'all' — всё;
+    'late' — первые 60 с GNSS нет, дальше всё (включился по ходу).
     Без этого коррекция по GNSS на датасете (GNSS есть всё время) дала бы нечестную точность.
     """
     mode = mode or os.environ.get('TRAM_GNSS', 'bursts')
     if a is None or mode == 'all' or not len(a):
         return a
     t = a[:, 1] - a[0, 1]
+    if mode == 'late':
+        return a[t > 60.0]
     keep = t <= GNSS_INIT_S
     if mode == 'bursts':
         keep |= (t > GNSS_INIT_S) & ((t - GNSS_INIT_S) % GNSS_EVERY_S >= GNSS_EVERY_S - GNSS_BURST_S)
     return a[keep]
 
 
+PRIMARY = '/localization/kinematic_state'   # основной вычислитель: есть только в проверочном прогоне
+
+
 def replay(est, d):
-    """События в порядке времени записи bag -> массив выходов [stamp, v, x, y, z, s]."""
+    """События в порядке времени записи bag -> массив выходов [stamp, v, x, y, z, s].
+
+    Положение основного вычислителя (строки [запись, метка, x, y, z, vx, vy, курс]) подаётся, если
+    оно есть в прогоне; оценщик берёт его, только если включён primary_sync.
+    """
     events = []
-    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g'), (GNSS_FIX['rover'], 'R')):
+    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g'), (GNSS_FIX['rover'], 'R'),
+                        (PRIMARY, 'P')):
         a = d.get(topic)
         if kind in 'gR':
             a = gnss_schedule(a)
+        if kind == 'P' and (a is None or a.shape[1] < 8 or not hasattr(est, 'on_primary')):
+            continue
         if a is not None and (kind != 'R' or hasattr(est, 'on_gnss_rover')):
             events += [(row[0], kind, row) for row in a]
     events.sort(key=lambda e: e[0])
@@ -122,6 +138,9 @@ def replay(est, d):
             r = est.on_cmd(row[1], int(row[2]))
         elif kind == 'R':
             est.on_gnss_rover(row[1], row[2], row[3], row[4])
+            r = None
+        elif kind == 'P':
+            est.on_primary(row[1], row[2], row[3], row[7])
             r = None
         else:
             r = est.on_gnss(row[1], row[2], row[3], row[4])
