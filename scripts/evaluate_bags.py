@@ -13,13 +13,14 @@
 
 Запуск (нужен pip-пакет rosbags; нода его не использует):
     python3 scripts/evaluate_bags.py <прогон> [<прогон> ...] \
-        [--route-map route.csv] [--stops stops.csv] [--k 3.5966] [--out results.csv]
+        [--route-map route.csv] [--stops stops.csv] [--k 3.5966] [--params fitted.yaml] [--out results.csv]
 """
 import argparse
 import bisect
 import csv
 import math
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 from rosbags.highlevel import AnyReader
@@ -27,6 +28,7 @@ from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src' / 'tram_odometry'))
 from tram_odometry.estimator import Estimator, FilterParams  # noqa: E402
+from tram_odometry.model import ModelParams  # noqa: E402
 from tram_odometry.positioning import Positioner  # noqa: E402
 from tram_odometry.stops import StopFixer  # noqa: E402
 from tram_odometry.track import MgrsLocal, RouteTrack  # noqa: E402
@@ -93,9 +95,21 @@ def reference(events, frame=MgrsLocal()):
     return sorted(pos), sorted(vel)
 
 
-def replay(events, route=None, k=3.5966, window_s=5.0):
-    """Выходы оценщика: [(метка, v, x, y, z, yaw, frame)]."""
-    est = Estimator(params=FilterParams(k0=k))
+def load_params(path):
+    """Модель и фильтр из файла параметров ноды (YAML), например от fit_model.py."""
+    import yaml
+    ros = yaml.safe_load(Path(path).read_text(encoding='utf-8'))['tram_odometry']['ros__parameters']
+
+    def make(cls, section):
+        names = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in ros.get(section, {}).items() if k in names})
+    return make(ModelParams, 'model'), make(FilterParams, 'filter')
+
+
+def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None):
+    """Выходы оценщика: [(метка, v, x, y, z, yaw, frame, проскальзывание)]."""
+    fparams = fparams or FilterParams(k0=k)
+    est = Estimator(model=model or ModelParams(), params=fparams)
     pos = Positioner(route, window_s)
     stops, resets, out, last_out = None, 0, [], None
 
@@ -129,7 +143,7 @@ def replay(events, route=None, k=3.5966, window_s=5.0):
         last_out = t
         st = est.state()
         x, y, z, yaw, frame = pos.pose(st.s)
-        out.append((t, st.v, x, y, z, yaw, frame))
+        out.append((t, st.v, x, y, z, yaw, frame, st.slip))
     return out
 
 
@@ -167,6 +181,7 @@ def main():
     ap.add_argument('--route-map', default=None)
     ap.add_argument('--stops', default=None)
     ap.add_argument('--k', type=float, default=3.5966)
+    ap.add_argument('--params', default=None, help='YAML параметров ноды (fit_model.py): модель и k0')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     route = RouteTrack.load(args.route_map, MgrsLocal(), args.stops) if args.route_map else None
@@ -174,7 +189,9 @@ def main():
     for bag in args.bags:
         events = read_bag(bag)
         ref_pos, ref_vel = reference(events)
-        row = {'bag': Path(bag).name, **metrics(replay(events, route, args.k), ref_pos, ref_vel)}
+        model, fparams = load_params(args.params) if args.params else (None, None)
+        row = {'bag': Path(bag).name, **metrics(replay(events, route, args.k, model=model, fparams=fparams),
+                                                 ref_pos, ref_vel)}
         rows.append(row)
         print(' '.join(f'{k}={v:.3f}' if isinstance(v, float) else f'{k}={v}' for k, v in row.items()))
     keys = sorted({k for r in rows for k in r if k != 'bag'})
