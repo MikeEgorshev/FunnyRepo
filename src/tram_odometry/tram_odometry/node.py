@@ -66,6 +66,7 @@ class TramOdometryNode(Node):
                                  lambda m: self._wheel(m, False), qos_in)
         self.create_subscription(DriverControllerCommand, '/vehicle/driver_position_cmd', self._cmd, qos_in)
         self.gnss_sub = self.create_subscription(NavSatFix, '/sensing/gnss/master/fix', self._gnss, qos_in)
+        self.rover_sub = self.create_subscription(NavSatFix, '/sensing/gnss/rover/fix', self._rover, qos_in)
         self.pub_v = self.create_publisher(VelocitySensor, '/result/velocity', 10)
         self.pub_p = self.create_publisher(Odometry, '/result/position', 10)
         self.pub_diag = self.create_publisher(DiagnosticArray, '/result/diagnostics', 10)
@@ -88,6 +89,14 @@ class TramOdometryNode(Node):
     def _cmd(self, msg):
         t0 = time.perf_counter()
         self._publish(self.est.on_cmd(self._stamp(msg), msg.position), msg.header.stamp, t0)
+
+    def _rover(self, msg):
+        """Вторая антенна — только курс на стоянке для выставки; после окна выставки не нужна."""
+        if msg.status.status < 0 or math.isnan(msg.latitude) or self.rover_sub is None:
+            return
+        if not self.est.on_gnss_rover(self._stamp(msg), msg.latitude, msg.longitude, msg.altitude):
+            self.destroy_subscription(self.rover_sub)
+            self.rover_sub = None
 
     def _gnss(self, msg):
         if msg.status.status < 0 or math.isnan(msg.latitude):
