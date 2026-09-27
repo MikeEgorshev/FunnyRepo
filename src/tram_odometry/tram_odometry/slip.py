@@ -25,6 +25,7 @@ class SlipParams:
     stale_s: float = 0.3            # с, старее — тележка считается пропавшей
     stuck_n: int = 6                # одинаковых показаний подряд — датчик завис (живые повторы — 2–3)
     stuck_min: float = 0.3          # м/с; на стоянке нули законно повторяются
+    mean_band: float = 0.1          # м/с; тележки ближе — берём среднее: min/max шума даёт смещение
 
 
 @dataclass
@@ -73,12 +74,16 @@ class Bogie:
         return self.repeats >= stuck_n
 
 
-def pick_speed(front, rear, notch):
-    """Скорость по фазе движения; None — тележка недоступна."""
+def pick_speed(front, rear, notch, mean_band=0.0):
+    """Скорость по фазе движения; None — тележка недоступна. Тележки согласны в пределах
+    mean_band — среднее: минимум двух шумных отсчётов в тяге систематически занижал бы
+    скорость (на 0,56 σ шума), максимум в торможении — завышал."""
     if front is None:
         return rear
     if rear is None:
         return front
+    if abs(front - rear) <= mean_band:
+        return 0.5 * (front + rear)
     if notch > 0:
         return min(front, rear)
     if notch < 0:
@@ -100,11 +105,18 @@ class SlipDetector:
         bogie = self.front if which == 'front' else self.rear
         bogie.update(t, v, self.p.accel_min_dt, self.p.stuck_min)
 
+    def _at(self, bogie, t):
+        """Скорость тележки, приведённая к моменту t по её же ускорению: отсчёты тележек
+        приходят в разное время, и без этого min/max по фазе брал бы более старый отсчёт —
+        оценка отставала бы на полпериода (≈ 0,05–0,1 с, до метра на ходу)."""
+        a = min(max(bogie.accel, -self.p.accel_brake), self.p.accel_traction)
+        return max(0.0, bogie.v + a * (t - bogie.t))
+
     def fresh_speeds(self, t):
-        """Скорости свежих и не зависших тележек: (front, rear), недоступная — None."""
+        """Скорости свежих и не зависших тележек на момент t: (front, rear), недоступная — None."""
         p = self.p
-        f = self.front.v if self.front.fresh(t, p.stale_s) and not self.front.frozen(p.stuck_n) else None
-        r = self.rear.v if self.rear.fresh(t, p.stale_s) and not self.rear.frozen(p.stuck_n) else None
+        f = self._at(self.front, t) if self.front.fresh(t, p.stale_s) and not self.front.frozen(p.stuck_n) else None
+        r = self._at(self.rear, t) if self.rear.fresh(t, p.stale_s) and not self.rear.frozen(p.stuck_n) else None
         return f, r
 
     def check(self, t, notch, v_est):
@@ -125,4 +137,4 @@ class SlipDetector:
             self._incons = 0
         use_front = None if flags.front_accel else front
         use_rear = None if flags.rear_accel else rear
-        return pick_speed(use_front, use_rear, notch), flags
+        return pick_speed(use_front, use_rear, notch, p.mean_band), flags

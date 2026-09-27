@@ -65,3 +65,20 @@ def test_zeros_at_standstill_are_not_a_frozen_sensor():
     for i in range(20):
         det.wheel('front', i * 0.1, 0.0)
     assert not det.front.frozen(det.p.stuck_n)
+
+
+def test_agreeing_bogies_are_averaged_not_min_max():
+    # разница в пределах шума — среднее; настоящее расхождение — по фазе
+    assert abs(pick_speed(10.00, 10.06, notch=5, mean_band=0.1) - 10.03) < 1e-9
+    assert pick_speed(10.0, 11.0, notch=5, mean_band=0.1) == 10.0
+    assert pick_speed(10.0, 11.0, notch=-5, mean_band=0.1) == 11.0
+
+
+def test_older_bogie_sample_is_brought_to_the_current_time():
+    det = SlipDetector()
+    for i in range(10):                       # разгон 1 м/с², задняя приходит на 0,05 с позже
+        t = i * 0.1
+        det.wheel('front', t, 5.0 + t)
+        det.wheel('rear', t + 0.05, 5.0 + t + 0.05)
+    front, rear = det.fresh_speeds(1.0)       # передняя — от 0,9 с, задняя — от 0,95 с
+    assert abs(front - 6.0) < 0.01 and abs(rear - 6.0) < 0.01
