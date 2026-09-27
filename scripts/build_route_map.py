@@ -19,7 +19,7 @@ from rosbags.highlevel import AnyReader
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src' / 'tram_odometry'))
 from evaluate_bags import MASTER, _stamp, typestore  # noqa: E402
 from tram_odometry.mapping import build  # noqa: E402
-from tram_odometry.track import LocalFrame  # noqa: E402
+from tram_odometry.track import LocalFrame, MgrsLocal  # noqa: E402
 
 
 def read_fixes(path):
@@ -55,9 +55,16 @@ def build_map(bags, out_dir, step=2.0, min_runs=3):
         for s, sigma in track.stops:
             f.write(f'{s:.2f},{sigma:.2f}\n')
     every = max(1, len(track.s) // 1500)
-    preview = {'x': [round(v, 1) for v in track.x[::every]], 'y': [round(v, 1) for v in track.y[::every]],
-               'z': [round(v, 2) for v in track.z[::every]], 's': [round(v, 1) for v in track.s[::every]],
-               'stops': [round(s, 1) for s, _ in track.stops], **info}
+    mgrs = MgrsLocal()
+
+    def grid(x, y, z):                              # превью — в сетке судьи, как выход ноды
+        return mgrs.forward(*frame.inverse(x, y, z))
+    pts = [grid(x, y, z) for x, y, z in zip(track.x[::every], track.y[::every], track.z[::every])]
+    stops = [grid(*track.pose(s)[:3]) for s, _ in track.stops]
+    preview = {'x': [round(p[0], 1) for p in pts], 'y': [round(p[1], 1) for p in pts],
+               'z': [round(p[2], 2) for p in pts], 's': [round(v, 1) for v in track.s[::every]],
+               'stops': [round(s, 1) for s, _ in track.stops],
+               'stops_xy': [[round(p[0], 1), round(p[1], 1)] for p in stops], **info}
     (out / 'route_preview.json').write_text(json.dumps(preview), encoding='utf-8')
     return info
 
