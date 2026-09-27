@@ -5,6 +5,8 @@
 дольше keepalive_s, публикуется прогноз по модели с меткой «последний вход + прошедшее время»:
 выход не реже 20 Гц даже при пропуске всех входов. GNSS master — выставка в окне после первой точки
 и коррекция пути по фиксам, если они приходят по ходу (gnss_corrections); rover — курс при выставке.
+primary_sync (по умолчанию выключено) — положение основного вычислителя (primary_topic, nav_msgs/Odometry
+base_link в сетке MGRS) поправляет резервный, пока есть GNSS. На проверке не включать: это эталон судьи.
 """
 import math
 import os
@@ -45,6 +47,7 @@ class TramOdometryNode(Node):
             'base_frame': 'base_link',
             'keepalive_s': 0.04,       # входы молчат дольше — публикуем прогноз по модели
             'keepalive_max_s': 2.0,    # и не дальше этого от последнего входа
+            'primary_topic': '/localization/kinematic_state',  # положение основного вычислителя (primary_sync)
         }
         for name, default in declared.items():
             self.declare_parameter(name, default)
@@ -75,6 +78,8 @@ class TramOdometryNode(Node):
         self.create_subscription(DriverControllerCommand, '/vehicle/driver_position_cmd', self._cmd, qos_in)
         self.gnss_sub = self.create_subscription(NavSatFix, '/sensing/gnss/master/fix', self._gnss, qos_in)
         self.rover_sub = self.create_subscription(NavSatFix, '/sensing/gnss/rover/fix', self._rover, qos_in)
+        if p.primary_sync:  # только в эксплуатации: входы по задаче — ручка, тележки и GNSS
+            self.create_subscription(Odometry, get('primary_topic'), self._primary, qos_in)
         self.pub_v = self.create_publisher(VelocitySensor, '/result/velocity', 10)
         self.pub_p = self.create_publisher(Odometry, '/result/position', 10)
         self.pub_diag = self.create_publisher(DiagnosticArray, '/result/diagnostics', 10)
@@ -131,13 +136,22 @@ class TramOdometryNode(Node):
             return
         t0 = time.perf_counter()
         out = self.est.on_gnss(self._stamp(msg), msg.latitude, msg.longitude, msg.altitude)
-        if out is None and self.est.ready and not self.est.p.gnss_corrections and self.gnss_sub is not None:
+        if (out is None and self.est.ready and not self.est.p.gnss_corrections and not self.est.p.primary_sync
+                and self.gnss_sub is not None):
             # окно выставки закончилось, коррекция выключена — GNSS больше не нужен
             self.destroy_subscription(self.gnss_sub)
             self.gnss_sub = None
             self.get_logger().info('выставка по GNSS завершена, дальше только колёса и контроллер')
             return
         self._publish(out, msg.header.stamp, t0)
+
+    def _primary(self, msg):
+        """Положение основного вычислителя: поправка резервного, пока есть GNSS (TramEstimator.on_primary)."""
+        if msg.header.frame_id not in ('', self.map_frame):
+            return
+        q, pos = msg.pose.pose.orientation, msg.pose.pose.position
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.est.on_primary(self._stamp(msg), pos.x, pos.y, yaw)
 
     # --- выходы ------------------------------------------------------------------------------
     def _publish(self, out, stamp, t0):
