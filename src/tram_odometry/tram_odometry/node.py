@@ -84,7 +84,7 @@ class TramOdometryNode(Node):
         p.init_window_s = get('init_window_s')
         vehicle = get('vehicle_id')
         p.wheel_kmh_per_mps = WHEEL_KMH_PER_MPS.get(vehicle, get('wheel_kmh_per_mps'))
-        self.params = p
+        self.est_params = p
         self.est = self._make_estimator()
         route, stops = self.est.map, self.est.stops
         self.map_frame, self.base_frame = get('map_frame'), get('base_frame')
@@ -123,7 +123,7 @@ class TramOdometryNode(Node):
             route.load_spurs(get('spurs_file'))
         stops = load_stops(get('stops_file')) if os.path.exists(get('stops_file')) else []
         model = self.model_type.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
-        return self.estimator_type(route, model, stops, copy.copy(self.params))
+        return self.estimator_type(route, model, stops, copy.copy(self.est_params))
 
     def _reset(self, stamp):
         """Новый прогон без перезапуска ноды: всё как при старте — выставка по GNSS в первые секунды."""
