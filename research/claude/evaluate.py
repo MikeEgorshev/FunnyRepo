@@ -14,6 +14,7 @@
 import argparse
 import csv
 import math
+import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -44,6 +45,9 @@ class EkfAdapter:
         p = Params()
         p.wheel_kmh_per_mps = KMH_PER_MPS.get(vehicle, KMH_PER_MPS['default'])
         p.output_frame, p.output_lever_m, p.output_dz_m = 'utm_local', -MASTER_X, -ANT_Z
+        for kv in filter(None, os.environ.get('TRAM_PARAMS', '').split(',')):  # подбор: TRAM_PARAMS=sigma_u=0.2,...
+            key, value = kv.split('=')
+            setattr(p, key, type(getattr(Params, key))(value))
         self.est = TramEstimator(m, TractionModel.load(TRACTION), stops, p)
         self.map = m
 
@@ -59,6 +63,9 @@ class EkfAdapter:
 
     def on_cmd(self, *a):
         return self._t(self.est.on_cmd(*a))
+
+    def on_gnss_rover(self, *a):
+        self.est.on_gnss_rover(*a)
 
 
 def make_estimator(name, bag_id, per_vehicle):
@@ -77,9 +84,9 @@ def make_estimator(name, bag_id, per_vehicle):
 def replay(est, d):
     """События в порядке времени записи bag -> массив выходов [stamp, v, x, y, z, s]."""
     events = []
-    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g')):
+    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g'), (GNSS_FIX['rover'], 'R')):
         a = d.get(topic)
-        if a is not None:
+        if a is not None and (kind != 'R' or hasattr(est, 'on_gnss_rover')):
             events += [(row[0], kind, row) for row in a]
     events.sort(key=lambda e: e[0])
     out = []
@@ -90,6 +97,9 @@ def replay(est, d):
             r = est.on_wheel(row[1], False, row[2])
         elif kind == 'c':
             r = est.on_cmd(row[1], int(row[2]))
+        elif kind == 'R':
+            est.on_gnss_rover(row[1], row[2], row[3], row[4])
+            r = None
         else:
             r = est.on_gnss(row[1], row[2], row[3], row[4])
         if r is not None and (not out or r[0] >= out[-1][0]):

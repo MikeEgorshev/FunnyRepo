@@ -206,7 +206,7 @@ def perturb(d, k, scenario, seed):
 def replay(est, d):
     """Как evaluate.replay, но с флагами: [stamp, v, x, y, z, s, slip, stuck, dropout, relative]."""
     events = []
-    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g')):
+    for topic, kind in ((FRONT, 'f'), (REAR, 'r'), (CMD, 'c'), (GNSS_FIX['master'], 'g'), (GNSS_FIX['rover'], 'R')):
         a = d.get(topic)
         if a is not None:
             events += [(row[0], kind, row) for row in a]
@@ -217,6 +217,9 @@ def replay(est, d):
             r = est.on_wheel(row[1], kind == 'f', row[2])
         elif kind == 'c':
             r = est.on_cmd(row[1], int(row[2]))
+        elif kind == 'R':
+            est.on_gnss_rover(row[1], row[2], row[3], row[4])
+            r = None
         else:
             r = est.on_gnss(row[1], row[2], row[3], row[4])
         if r is not None:
