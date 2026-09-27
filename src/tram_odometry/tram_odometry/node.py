@@ -8,9 +8,12 @@
 primary_sync (по умолчанию выключено) — положение основного вычислителя (primary_topic, nav_msgs/Odometry
 base_link в сетке MGRS) поправляет резервный, пока есть GNSS. На проверке не включать: это эталон судьи.
 """
+import copy
+import functools
 import math
 import os
 import time
+from collections import deque
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
@@ -29,9 +32,29 @@ from .route_map import RouteMap
 WHEEL_KMH_PER_MPS = {'30618': 3.5953, '30639': 3.6106}
 
 
+def _guarded(fn):
+    """Исключение в колбэке не роняет ноду: вход пропускается, ошибка — в лог не чаще раза в 5 с.
+
+    Перезапуск ноды посреди прогона хуже пропуска: без GNSS на старте она ушла бы в относительный режим.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args):
+        try:
+            return fn(self, *args)
+        except Exception as exc:  # noqa: B902 — любая ошибка одного входа не должна останавливать выход
+            self.errors += 1
+            self.get_logger().error(f'{fn.__name__}: {type(exc).__name__}: {exc}', throttle_duration_sec=5.0)
+            return None
+    return wrapper
+
+
 class TramOdometryNode(Node):
+    RESET_BACK_S = 5.0   # метки колёс и ручки ушли назад дальше этого — bag проигрывают заново
+    RESET_BACK_N = 10    # ... подряд столько входов: одиночная битая метка оценщик не сбрасывает
+
     def __init__(self):
         super().__init__('tram_odometry')
+        self.errors = 0              # исключений в колбэках (_guarded)
         share = get_package_share_directory('tram_odometry')
         p = Params()
         declared = {
@@ -59,18 +82,17 @@ class TramOdometryNode(Node):
         p.init_window_s = get('init_window_s')
         vehicle = get('vehicle_id')
         p.wheel_kmh_per_mps = WHEEL_KMH_PER_MPS.get(vehicle, get('wheel_kmh_per_mps'))
-        route = RouteMap.load(get('route_map_file'))
-        if os.path.exists(get('spurs_file')):
-            route.load_spurs(get('spurs_file'))
-        stops = load_stops(get('stops_file')) if os.path.exists(get('stops_file')) else []
-        model = TractionModel.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
-        self.est = TramEstimator(route, model, stops, p)
+        self.params = p
+        self.est = self._make_estimator()
+        route, stops = self.est.map, self.est.stops
         self.map_frame, self.base_frame = get('map_frame'), get('base_frame')
         self.keepalive_s, self.keepalive_max_s = get('keepalive_s'), get('keepalive_max_s')
         self.last_in = None          # (метка последнего входа, время его прихода по monotonic)
         self.last_pub = None         # время последней публикации по monotonic
+        self.back_count = 0          # входов подряд с меткой далеко в прошлом (RESET_BACK_S)
 
-        qos_in = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
+        self.qos_in = qos_in = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT,
+                                          history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(VelocitySensor, '/vehicle/front_bogie_velocity',
                                  lambda m: self._wheel(m, True), qos_in)
         self.create_subscription(VelocitySensor, '/vehicle/rear_bogie_velocity',
@@ -83,7 +105,7 @@ class TramOdometryNode(Node):
         self.pub_v = self.create_publisher(VelocitySensor, '/result/velocity', 10)
         self.pub_p = self.create_publisher(Odometry, '/result/position', 10)
         self.pub_diag = self.create_publisher(DiagnosticArray, '/result/diagnostics', 10)
-        self.proc_ms = []
+        self.proc_ms = deque(maxlen=500)
         self.last_diag = 0.0
         self.last_out = None
         self.create_timer(0.5, self._diagnostics)
@@ -91,25 +113,60 @@ class TramOdometryNode(Node):
         self.get_logger().info(f'tram_odometry: k={p.wheel_kmh_per_mps:.4f}, карта {route.s[-1]:.0f} м, '
                                f'отводов {len(route.spurs)}, опорных стоянок {len(stops)}')
 
+    def _make_estimator(self):
+        """Оценщик с чистым состоянием: карта и модель читаются заново — их меняет выставка и ход прогона."""
+        get = lambda name: self.get_parameter(name).value  # noqa: E731
+        route = RouteMap.load(get('route_map_file'))
+        if os.path.exists(get('spurs_file')):
+            route.load_spurs(get('spurs_file'))
+        stops = load_stops(get('stops_file')) if os.path.exists(get('stops_file')) else []
+        model = TractionModel.load(get('traction_table_file'), delay_s=get('traction_delay_s'))
+        return TramEstimator(route, model, stops, copy.copy(self.params))
+
+    def _reset(self, stamp):
+        """Новый прогон без перезапуска ноды: всё как при старте — выставка по GNSS в первые секунды."""
+        self.est = self._make_estimator()
+        self.last_in = self.last_pub = self.last_out = None
+        self.proc_ms.clear()
+        if self.gnss_sub is None:
+            self.gnss_sub = self.create_subscription(NavSatFix, '/sensing/gnss/master/fix', self._gnss, self.qos_in)
+        if self.rover_sub is None:
+            self.rover_sub = self.create_subscription(NavSatFix, '/sensing/gnss/rover/fix', self._rover, self.qos_in)
+        self.get_logger().warn(f'метки входов ушли назад (до {stamp:.1f}): новый прогон, оценщик сброшен')
+
     # --- входы -----------------------------------------------------------------------------
     @staticmethod
     def _stamp(msg):
         return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
     def _input(self, stamp):
+        """Метка колёс или ручки. Устойчивый скачок назад — bag проигрывают заново: сброс оценщика.
+
+        Скачок вперёд не сбрасывает: внутри прогона бывают разрывы записи (max_gap_s оценщика), а без GNSS
+        сброс перевёл бы выход в относительный режим.
+        """
+        if self.last_in is not None and stamp < self.last_in[0] - self.RESET_BACK_S:
+            self.back_count += 1
+            if self.back_count < self.RESET_BACK_N:
+                return
+            self._reset(stamp)
+        self.back_count = 0
         if self.last_in is None or stamp >= self.last_in[0]:
             self.last_in = (stamp, time.monotonic())
 
+    @_guarded
     def _wheel(self, msg, front):
         t0 = time.perf_counter()
         self._input(self._stamp(msg))
         self._publish(self.est.on_wheel(self._stamp(msg), front, msg.velocity), msg.header.stamp, t0)
 
+    @_guarded
     def _cmd(self, msg):
         t0 = time.perf_counter()
         self._input(self._stamp(msg))
         self._publish(self.est.on_cmd(self._stamp(msg), msg.position), msg.header.stamp, t0)
 
+    @_guarded
     def _rover(self, msg):
         """Вторая антенна — только курс на стоянке для выставки; после окна выставки не нужна."""
         if msg.status.status < 0 or math.isnan(msg.latitude) or self.rover_sub is None:
@@ -118,6 +175,7 @@ class TramOdometryNode(Node):
             self.destroy_subscription(self.rover_sub)
             self.rover_sub = None
 
+    @_guarded
     def _keepalive(self):
         """Входы молчат — публикуем прогноз, чтобы выход не замирал."""
         if self.last_in is None or self.last_pub is None:
@@ -131,6 +189,7 @@ class TramOdometryNode(Node):
         t0 = time.perf_counter()
         self._publish(self.est.predict_output(t), Time(sec=sec, nanosec=nsec), t0)
 
+    @_guarded
     def _gnss(self, msg):
         if msg.status.status < 0 or math.isnan(msg.latitude):
             return
@@ -145,6 +204,7 @@ class TramOdometryNode(Node):
             return
         self._publish(out, msg.header.stamp, t0)
 
+    @_guarded
     def _primary(self, msg):
         """Положение основного вычислителя: поправка резервного, пока есть GNSS (TramEstimator.on_primary)."""
         if msg.header.frame_id not in ('', self.map_frame):
@@ -189,6 +249,7 @@ class TramOdometryNode(Node):
         self.last_pub = time.monotonic()
         self.proc_ms.append((time.perf_counter() - t0) * 1e3)
 
+    @_guarded
     def _diagnostics(self):
         out = self.last_out
         if out is None:
@@ -204,12 +265,12 @@ class TramOdometryNode(Node):
             st.level, st.message = DiagnosticStatus.WARN, 'проскальзывание/юз: колесо исключено'
         else:
             st.level, st.message = DiagnosticStatus.OK, 'ok'
-        proc = sorted(self.proc_ms[-500:]) or [0.0]
+        proc = sorted(self.proc_ms) or [0.0]
         st.values = [KeyValue(key=k, value=str(v)) for k, v in (
             ('slip', out['slip']), ('wheel_dropout', out['dropout']),
             ('speed_mps', round(out['v'], 3)), ('s_m', round(out['s'], 1)),
             ('sigma_s_m', round(math.sqrt(max(out['var_s'], 0.0)), 2)),
-            ('wheel_scale_correction', round(out['scale'], 5)),
+            ('wheel_scale_correction', round(out['scale'], 5)), ('callback_errors', self.errors),
             ('proc_ms_p50', round(proc[len(proc) // 2], 3)),
             ('proc_ms_p99', round(proc[int(len(proc) * 0.99) - 1 if len(proc) > 1 else 0], 3)))]
         arr.status = [st]
