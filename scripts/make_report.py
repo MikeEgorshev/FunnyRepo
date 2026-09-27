@@ -7,14 +7,18 @@
   метрики на отложенных прогонах). На настоящих данных запускать так же;
 - реальное время — JSON от scripts/realtime_check.py (последняя строка вывода,
   --realtime "название=файл.json") или замер по умолчанию (Humble, 2 ядра, 512 МБ);
-- факты о настоящем датасете — сводка по 122 прогонам (PR #2, docs/data.md).
+- факты о настоящем датасете — сводка по 122 прогонам (PR #2, docs/data.md);
+- настоящий проверочный прогон организаторов (--real-bag, с эталоном судьи
+  /localization/kinematic_state) и вывод их судьи hackathon_solution_checker (--judge).
 
 Запуск:
-    python3 scripts/make_report.py --results results/results.json [--realtime "Без карты=rt1.json" ...]
+    python3 scripts/make_report.py --results results/results.json [--realtime "Без карты=rt1.json" ...] \
+        [--real-bag <прогон> --real-route route.csv --real-stops stops.csv --judge "Судья=metrics.log"]
 Страница пересобирается на месте: меняется только блок <script id="report-data">.
 """
 import argparse
 import json
+import math
 import re
 import sys
 import time
@@ -22,10 +26,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'src' / 'tram_odometry'), str(ROOT / 'src' / 'tram_odometry' / 'test')]
+sys.path[:0] = [str(ROOT / 'src' / 'tram_odometry'), str(ROOT / 'src' / 'tram_odometry' / 'test'),
+                str(ROOT / 'scripts')]
+import evaluate_bags as EB  # noqa: E402
 from synthetic import Scenario, run  # noqa: E402
 from tram_odometry.estimator import Estimator  # noqa: E402
 from tram_odometry.model import ModelParams  # noqa: E402
+from tram_odometry.track import MgrsLocal, RouteTrack  # noqa: E402
 
 PAGE = ROOT / 'docs' / 'presentation.html'
 
@@ -109,7 +116,65 @@ def realtime_entry(label, path):
             'frame': r.get('last_frame_id')}
 
 
-def build(results=None, realtime=None):
+def judge_entry(label, path):
+    """Последний отчёт судьи hackathon_solution_checker из его лога."""
+    vel = pos = None
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        if 'Velocity metrics' in line:
+            vel = line
+        elif 'Position metrics' in line:
+            pos = line
+    out = {'name': label}
+    for text in (vel, pos):
+        for name, rmse, mx, n in re.findall(r'(\w+): RMSE=([\d.naN]+), max=([\d.naN]+), n=(\d+)', text or ''):
+            out[name] = {'rmse': float(rmse), 'max': float(mx), 'n': int(n)}
+    return out
+
+
+def real_run(bag, route_csv=None, stops_csv=None, judges=(), every_s=1.0):
+    """Настоящий прогон: метрики как у судьи и ряды для графиков по нашему оценщику."""
+    events = EB.read_bag(bag)
+    ref_pos, ref_vel = EB.reference(events)
+    route = RouteTrack.load(route_csv, MgrsLocal(), stops_csv) if route_csv else None
+    variants = {'no_map': dict(route=None)}
+    if route is not None:
+        variants = {'map': dict(route=route), 'map_corr': dict(route=route, corrections=True), **variants}
+    outs = {k: EB.replay(events, **kw) for k, kw in variants.items()}
+    metrics = {k: EB.metrics(o, ref_pos, ref_vel) for k, o in outs.items()}
+    main = outs.get('map') or outs['no_map']
+    corr = outs.get('map_corr')
+    times = [o[0] for o in main]
+    ctimes = [o[0] for o in corr] if corr else []
+    vel = dict(ref_vel)
+    tr = {k: [] for k in ('t', 'v_ref', 'v_est', 'err', 'err_corr', 'x_ref', 'y_ref', 'x_est', 'y_est')}
+    t0, nxt = ref_pos[0][0], ref_pos[0][0]
+    for t, x, y, z in ref_pos:
+        if t < nxt:
+            continue
+        nxt = t + every_s
+        j = EB._nearest(times, t)
+        if j is None:
+            continue
+        o = main[j]
+        tr['t'].append(round(t - t0, 1))
+        tr['v_ref'].append(round(vel.get(t, 0.0), 3))
+        tr['v_est'].append(round(o[1], 3))
+        tr['err'].append(round(math.dist((x, y, z), o[2:5]), 2) if o[6] == 'map' else None)
+        jc = EB._nearest(ctimes, t) if corr else None
+        tr['err_corr'].append(round(math.dist((x, y, z), corr[jc][2:5]), 2) if jc is not None and corr[jc][6] == 'map'
+                              else None)
+        tr['x_ref'].append(round(x, 1))
+        tr['y_ref'].append(round(y, 1))
+        tr['x_est'].append(round(o[2], 1))
+        tr['y_est'].append(round(o[3], 1))
+    out = {'bag': Path(bag).name, 'duration_s': round(ref_pos[-1][0] - t0, 1), 'metrics': metrics, 'trace': tr,
+           'judge': [judge_entry(*j.split('=', 1)) for j in judges]}
+    if route is not None:                   # саму геометрию карты в страницу не кладём — только её размеры
+        out['route_info'] = {'length_m': route.length, 'stops': len(route.stops)}
+    return out
+
+
+def build(results=None, realtime=None, real=None):
     res = json.loads(Path(results).read_text(encoding='utf-8')) if results else None
     source = None
     if res:
@@ -123,6 +188,7 @@ def build(results=None, realtime=None):
         'pipeline': res,
         'realtime': realtime or REALTIME,
         'dataset': DATASET,
+        'real': real,
     }
 
 
@@ -141,11 +207,16 @@ def main():
     ap.add_argument('--results', default=None, help='results.json от scripts/pipeline.py')
     ap.add_argument('--realtime', nargs='*', default=None, help='"название=файл" с выводом realtime_check.py')
     ap.add_argument('--page', default=str(PAGE))
+    ap.add_argument('--real-bag', default=None, help='настоящий прогон с эталоном /localization/kinematic_state')
+    ap.add_argument('--real-route', default=None)
+    ap.add_argument('--real-stops', default=None)
+    ap.add_argument('--judge', nargs='*', default=(), help='"название=лог" судьи hackathon_solution_checker')
     args = ap.parse_args()
     rt = None
     if args.realtime:
         rt = [realtime_entry(*item.split('=', 1)) for item in args.realtime]
-    data = build(args.results, rt)
+    real = real_run(args.real_bag, args.real_route, args.real_stops, args.judge) if args.real_bag else None
+    data = build(args.results, rt, real)
     inject(data, args.page)
     print('данные вшиты в', args.page, f'({len(json.dumps(data)) // 1024} КБ)')
 

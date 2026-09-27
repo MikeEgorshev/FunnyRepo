@@ -35,7 +35,7 @@ ros2 bag play <прогон>          # в другом терминале
 ## Проверка
 
 ```bash
-python3 -m pytest src/tram_odometry/test -q                               # 61 тест, без ROS
+python3 -m pytest src/tram_odometry/test -q                               # 65 тестов, без ROS
 ROS_IMAGE=mirror.gcr.io/library/ros:humble-ros-base TRAM_MSGS=<пакет сообщений> \
   REALTIME_ARGS="--stall-at 30 --stall-s 1.5" scripts/check_ros.sh        # Humble: сборка без сети, тесты, реальное время
 python3 scripts/pipeline.py --dataset <dataset>/data --out-dir results/    # карта, модель, метрики (pip install rosbags pyyaml)
