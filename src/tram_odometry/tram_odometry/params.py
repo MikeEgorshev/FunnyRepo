@@ -13,7 +13,7 @@ NODE_DEFAULTS = {
     'child_frame_id': 'base_link',
     'rate_hz': 25.0,
     'diagnostics_hz': 2.0,
-    'max_extrapolation_s': 0.5,
+    'max_extrapolation_s': 0.2,
     'gnss_init_window_s': 5.0,
     'gnss_min_move_m': 3.0,
     'gnss_corrections': False,

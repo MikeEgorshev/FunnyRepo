@@ -14,7 +14,7 @@ reject_max_s, отсчёты снова принимаются, но с боль
 Чистый Python без зависимостей: один и тот же код работает в ноде ROS и в офлайн-оценке.
 """
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from tram_odometry.model import G, ModelParams, accel, accel_dv, lag
 from tram_odometry.slip import SlipDetector, SlipFlags, SlipParams
@@ -309,11 +309,28 @@ class Estimator:
         """
         if self.t is None or t <= self.t:
             return self.state()
-        saved = (list(self.x), [row[:] for row in self.P], self.t, self.u)
+        a = self._wheel_accel()
+        if a is not None:                   # колёса свежие: вперёд по их ускорению, а не по модели —
+            st = self.state()               # модель не видит торможения в нейтрали
+            dt = t - self.t
+            v = max(0.0, st.v + a * dt)
+            return replace(st, t=t, v=v, s=st.s + 0.5 * (st.v + v) * dt, accel=a,
+                           var_s=st.var_s + st.var_v * dt * dt, var_v=st.var_v + (self.p.q_accel * dt) ** 2)
+        saved = (list(self.x), [row[:] for row in self.P], self.t, self.u, self.odo)
         self.advance(t)
         st = self.state()
-        self.x, self.P, self.t, self.u = saved
+        self.x, self.P, self.t, self.u, self.odo = saved   # odo тоже: по нему уточняется масштаб колёс k
         return st
+
+    def _wheel_accel(self):
+        """Ускорение по свежим независшим тележкам без флагов (м/с²) или None."""
+        det, sp = self.detector, self.detector.p
+        vals = [b.accel for b in (det.front, det.rear)
+                if b.fresh(self.t, sp.stale_s) and not b.frozen(sp.stuck_n)]
+        if not vals or self.slip:
+            return None
+        a = sum(vals) / len(vals)
+        return min(max(a, -sp.accel_brake), sp.accel_traction)
 
     def state(self):
         x = self.x

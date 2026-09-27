@@ -15,7 +15,7 @@ tram_odometry:
     child_frame_id: base_link
     rate_hz: 25.0                  # частота публикации /result/*
     diagnostics_hz: 2.0
-    max_extrapolation_s: 0.5       # прогноз выхода вперёд от последнего входа, не дольше
+    max_extrapolation_s: 0.2       # прогноз выхода вперёд от последнего входа, не дольше (входы идут 20–40 Гц)
     gnss_init_window_s: 5.0        # GNSS гарантирован только в первые секунды прогона
     gnss_min_move_m: 3.0           # меньше — курс по GNSS не определён
     gnss_corrections: false        # фиксы после выставки -> привязки дистанции (решение команды)

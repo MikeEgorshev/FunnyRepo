@@ -154,3 +154,19 @@ def test_disturbance_does_not_carry_over_a_stop_into_the_next_start():
         est.wheel('front', t, (t - t0) * 3.5966)
         est.wheel('rear', t + 0.005, (t - t0) * 3.5966)
     assert abs(est.state().v - (t - t0)) < 0.3 and not est.state().slip
+
+
+def test_state_at_does_not_change_the_filter_or_the_wheel_scale_distance():
+    est = Estimator()
+    for i in range(20):
+        t = 0.1 * i
+        est.set_notch(t, 5)
+        est.wheel('front', t, 36.0)
+        est.wheel('rear', t + 0.005, 36.0)
+    before = (list(est.x), est.t, est.odo)
+    for k in range(50):                           # таймер 25 Гц: прогнозы вперёд с колёсами и без
+        est.state_at(est.t + 0.04 * (k % 5 + 1))
+    est.detector.front.t = est.detector.rear.t = -10.0     # колёса «пропали» — прогноз по модели
+    for k in range(50):
+        est.state_at(est.t + 0.04 * (k % 5 + 1))
+    assert (list(est.x), est.t, est.odo) == before
