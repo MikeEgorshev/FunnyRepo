@@ -16,6 +16,7 @@ NODE_DEFAULTS = {
     'max_extrapolation_s': 0.5,
     'gnss_init_window_s': 5.0,
     'gnss_min_move_m': 3.0,
+    'gnss_corrections': False,
     'initial_yaw': 0.0,
     'output_frame': 'mgrs',
     'route_map_file': '',

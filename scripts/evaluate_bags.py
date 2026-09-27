@@ -113,11 +113,11 @@ def load_params(path):
     return make(ModelParams, 'model'), make(FilterParams, 'filter')
 
 
-def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None):
+def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None, corrections=False):
     """Выходы оценщика: [(метка, v, x, y, z, yaw, frame, проскальзывание)]."""
     fparams = fparams or FilterParams(k0=k)
     est = Estimator(model=model or ModelParams(), params=fparams)
-    pos = Positioner(route, window_s)
+    pos = Positioner(route, window_s, corrections=corrections)
     stops, resets, out, last_out = None, 0, [], None
 
     def use_track():
@@ -128,8 +128,7 @@ def replay(events, route=None, k=3.5966, window_s=5.0, model=None, fparams=None)
     for _, topic, m in events:
         t = _stamp(m)
         if topic in (MASTER, ROVER):
-            if not pos.locked:
-                pos.fix(t, m.latitude, m.longitude, m.altitude, m.status.status, topic == ROVER)
+            pos.fix(t, m.latitude, m.longitude, m.altitude, m.status.status, topic == ROVER)
             continue
         if topic == CMD:
             est.set_notch(t, int(m.position))
@@ -192,6 +191,7 @@ def main():
     ap.add_argument('--stops', default=None)
     ap.add_argument('--k', type=float, default=3.5966)
     ap.add_argument('--params', default=None, help='YAML параметров ноды (fit_model.py): модель и k0')
+    ap.add_argument('--gnss-corrections', action='store_true', help='фиксы после выставки -> привязки дистанции')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     route = RouteTrack.load(args.route_map, MgrsLocal(), args.stops) if args.route_map else None
@@ -200,7 +200,8 @@ def main():
         events = read_bag(bag)
         ref_pos, ref_vel = reference(events)
         model, fparams = load_params(args.params) if args.params else (None, None)
-        row = {'bag': Path(bag).name, **metrics(replay(events, route, args.k, model=model, fparams=fparams),
+        row = {'bag': Path(bag).name, **metrics(replay(events, route, args.k, model=model, fparams=fparams,
+                                                        corrections=args.gnss_corrections),
                                                  ref_pos, ref_vel)}
         rows.append(row)
         print(' '.join(f'{k}={v:.3f}' if isinstance(v, float) else f'{k}={v}' for k, v in row.items()))

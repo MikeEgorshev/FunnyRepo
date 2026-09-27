@@ -8,17 +8,28 @@
 
 Выходная точка — base_link: ось передней тележки на уровне рельса, на lever_m впереди
 антенны master по пути и на dz_m по высоте (tf антенн от организаторов, QA 25.09).
+
+Коррекция по GNSS после выставки (corrections=True, по умолчанию выключена): в проверочных
+прогонах фиксы появляются короткими всплесками раз в 2–3 минуты; фикс master проецируется
+на карту и уходит в фильтр привязкой дистанции (не чаще раза в corr_period_s). Описание задачи
+разрешает GNSS «для начальной выставки и коррекции», README датасета — только для выставки:
+включать ли — решение команды.
 """
-from tram_odometry.track import GnssInit, StraightTrack
+import math
+
+from tram_odometry.track import GnssInit, MgrsLocal, StraightTrack
 
 
 class Positioner:
     def __init__(self, route=None, window_s=5.0, frame='mgrs', lever_m=9.873, dz_m=-3.0,
-                 fallback_yaw=0.0, min_move_m=3.0, max_lock_m=50.0):
+                 fallback_yaw=0.0, min_move_m=3.0, max_lock_m=50.0, corrections=False,
+                 corr_sigma=2.0, corr_gate_m=60.0, corr_period_s=1.0):
         if route is not None and frame != 'mgrs':
             raise ValueError('карта задана в сетке MGRS: выход с картой — только frame=mgrs')
         self.route = route
         self.max_lock_m = max_lock_m
+        self.corrections, self.corr_sigma = corrections, corr_sigma
+        self.corr_gate_m, self.corr_period_s = corr_gate_m, corr_period_s
         self.window_s, self.frame, self.min_move_m = window_s, frame, min_move_m
         self.lever_m, self.dz_m, self.fallback_yaw = lever_m, dz_m, fallback_yaw
         self.start_run()
@@ -28,9 +39,14 @@ class Positioner:
         self.track = StraightTrack()
         self.locked = False
         self.lock_dist = None           # расстояние от точки старта до карты, м
+        self._pending = None            # последний фикс master после выставки
+        self._last_corr = None
+        self.corrections_applied = 0
 
     def fix(self, t, lat, lon, alt, status=0, rover=False):
         if self.locked:
+            if self.corrections and not rover and status >= 0 and all(map(math.isfinite, (lat, lon, alt))):
+                self._pending = (t, lat, lon, alt)
             return
         self.init.fix(t, lat, lon, alt, status, rover)
         if not self.init.relative:
@@ -39,7 +55,11 @@ class Positioner:
     def update(self, t, estimator):
         """Вызывать на каждом входе. True — в этот момент закончилась выставка."""
         self.init.start(t)
-        if self.locked or not self.init.expired(t):
+        if self.locked:
+            if self._pending is not None:
+                self._correct(estimator)
+            return False
+        if not self.init.expired(t):
             return False
         self.locked = True
         if self.init.relative:
@@ -49,6 +69,25 @@ class Positioner:
         elif not self.init.still:            # без карты и на ходу: прямая идёт от последнего фикса,
             estimator.set_position(0.0, 3.0)  # значит и дистанция от него
         return True
+
+    def _correct(self, estimator):
+        """Фикс master после выставки -> привязка дистанции (только на карте)."""
+        t, lat, lon, alt = self._pending
+        self._pending = None
+        if self.track is not self.route or (self._last_corr is not None and t - self._last_corr < self.corr_period_s):
+            return
+        x, y, _ = (self.init.frame or MgrsLocal()).forward(lat, lon, alt)
+        s_est = estimator.state().s
+        s_map, dist = self.route.locate(x, y, self.route.pose(s_est)[3])
+        if dist > 10.0:
+            return                                      # фикс не на пути: прыжок GNSS или отвод
+        half = 0.5 * self.route.length
+        delta = (s_map - s_est + half) % self.route.length - half
+        if abs(delta) > self.corr_gate_m:
+            return
+        estimator.position_fix(t, s_est + delta, self.corr_sigma)
+        self._last_corr = t
+        self.corrections_applied += 1
 
     def _lock_route(self, estimator):
         """Проекция точки старта на карту. С курсом — свой путь двухпутки; ни одного участка

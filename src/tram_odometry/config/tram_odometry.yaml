@@ -18,6 +18,7 @@ tram_odometry:
     max_extrapolation_s: 0.5       # прогноз выхода вперёд от последнего входа, не дольше
     gnss_init_window_s: 5.0        # GNSS гарантирован только в первые секунды прогона
     gnss_min_move_m: 3.0           # меньше — курс по GNSS не определён
+    gnss_corrections: false        # фиксы после выставки -> привязки дистанции (решение команды)
     initial_yaw: 0.0               # рад от оси восток, если курс не определён
     output_frame: mgrs             # сетка судьи: UTM 37N минус (300000, 6100000); enu — от первой точки GNSS
     route_map_file: ''             # карта линии CSV (s_m, lat, lon, alt); пусто — запасная прямая

@@ -92,3 +92,21 @@ def test_heading_across_the_track_still_locks_without_heading():
     _fixes(pos, xa - 12.436 * math.sin(yaw), ya + 12.436 * math.cos(yaw), rover=True)   # курс поперёк пути
     _drive(pos, est, 6.0)
     assert pos.track is route and abs(est.state().s - 300.0) < 1.0
+
+
+def test_gnss_fix_after_alignment_corrects_distance_only_when_enabled():
+    from test_track import _latlon_of
+    route, _, _ = _ring()
+    for enabled in (False, True):
+        pos, est = Positioner(route, window_s=5.0, corrections=enabled), Estimator()
+        xa, ya, _, yaw = route.pose(300.0)
+        _fixes(pos, xa, ya)
+        _fixes(pos, xa + 12.436 * math.cos(yaw), ya + 12.436 * math.sin(yaw), rover=True)
+        _drive(pos, est, 6.0)
+        est.set_position(280.0, 20.0)                 # дистанция уехала на 20 м, σ выросла
+        lat, lon = _latlon_of(xa, ya)
+        pos.fix(6.05, lat, lon, 150.0)                # фикс master на месте s = 300
+        est.wheel('front', 6.1, 0.0)
+        pos.update(6.1, est)
+        s = est.state().s
+        assert (abs(s - 300.0) < 2.0) if enabled else (abs(s - 280.0) < 0.5)

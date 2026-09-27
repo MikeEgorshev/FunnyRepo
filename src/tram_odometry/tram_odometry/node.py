@@ -59,7 +59,8 @@ class TramOdometryNode(Node):
             route = RouteTrack.load(cfg['route_map_file'], MgrsLocal(), cfg['stops_file'] or None)
             self.get_logger().info(f'route map {route.length:.0f} m, {len(route.stops)} stops')
         self.pos = Positioner(route, cfg['gnss_init_window_s'], cfg['output_frame'], cfg['output_lever_m'],
-                              cfg['output_dz_m'], cfg['initial_yaw'], cfg['gnss_min_move_m'])
+                              cfg['output_dz_m'], cfg['initial_yaw'], cfg['gnss_min_move_m'],
+                              corrections=cfg['gnss_corrections'])
         self._start_run()
 
         best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -123,7 +124,7 @@ class TramOdometryNode(Node):
         self._input(t)
 
     def _gnss(self, msg, rover):
-        if self.pos.locked:
+        if self.pos.locked and not self.pos.corrections:
             return                                    # после выставки GNSS не используем
         t = _stamp(msg, self._now())
         self.pos.fix(t, msg.latitude, msg.longitude, msg.altitude, msg.status.status, rover)
