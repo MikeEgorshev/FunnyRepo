@@ -1,18 +1,15 @@
-"""Strict, causal integrated estimator; legacy estimator remains available.
-
-GNSS is an initialization input only. Neither a parameter nor a late old-stamp
-message can reopen the initialization window. No reference odometry is used.
-"""
+"""Causal integrated estimator with GNSS corrections isolated from speed."""
 import copy
 import math
 
 from .estimator import Params, TramEstimator, _mul, _transpose
+from .position_correction import PositionCorrection
 
 
 class IntegratedEstimator(TramEstimator):
     def __init__(self, route_map, model, stops=(), params=None):
         p = copy.copy(params or Params())
-        p.gnss_corrections = p.primary_sync = False
+        p.primary_sync = False
         # Publish the estimated velocity AT the stamp, not a judge-tuned delay.
         p.output_v_delay_s = 0.0
         p.output_frame, p.output_origin = 'utm_local', 'frame'
@@ -25,6 +22,8 @@ class IntegratedEstimator(TramEstimator):
         self.route_alternatives = []
         self.preview = None
         self.observed_until = None
+        self.position_correction = PositionCorrection()
+        self.travel = 0.0
 
     def _initial_window(self, stamp):
         if not math.isfinite(stamp) or self.init_locked:
@@ -39,9 +38,14 @@ class IntegratedEstimator(TramEstimator):
         if not all(math.isfinite(x) for x in (stamp, lat, lon, alt)):
             return None
         if not self._initial_window(stamp):
-            return None
+            return self._gnss_correction(stamp, lat, lon, alt)
         self.preview = None
         return super().on_gnss(stamp, lat, lon, alt)
+
+    def _gnss_correction(self, stamp, lat, lon, alt):
+        if self.init_deadline is not None and stamp > self.init_deadline:
+            self.position_correction.update(self, stamp, lat, lon, alt)
+        return None
 
     def on_gnss_rover(self, stamp, lat, lon, alt):
         if not all(math.isfinite(x) for x in (stamp, lat, lon, alt)):
@@ -166,6 +170,7 @@ class IntegratedEstimator(TramEstimator):
             self.p.max_gap_s = gap
 
     def _predict_step(self, h):
+        previous_s = self.s
         # Long prediction capped to constant speed once all inputs are stale.
         last = self.observed_until if self.observed_until is not None else self.t
         if self.t - last > 2.0:
@@ -180,6 +185,8 @@ class IntegratedEstimator(TramEstimator):
             self.t += h
         else:
             super()._predict_step(h)
+        # Continuous model distance excludes EKF map/stop position jumps.
+        self.travel += self.s - previous_s
 
     def _output(self, stamp):
         out = super()._output(stamp)
@@ -187,11 +194,16 @@ class IntegratedEstimator(TramEstimator):
             if self.mode != 'relative':
                 # Stored map samples describe master antenna, not base_link.
                 # Apply rigid TF in Cartesian coordinates, not an arc-length shift.
-                x, y, z, yaw = self.map.pose(self.s)
-                heading = yaw if self.facing > 0 else math.atan2(-math.sin(yaw), -math.cos(yaw))
+                x, y, z, yaw, facing = self.position_correction.pose(
+                    self.map, self.s, self.facing, self.travel)
+                heading = yaw if facing > 0 else math.atan2(-math.sin(yaw), -math.cos(yaw))
                 out.update(x=x + self.p.output_lever_m * math.cos(heading),
                            y=y + self.p.output_lever_m * math.sin(heading),
                            z=z + self.p.output_dz_m, yaw=heading)
+                correction = self.position_correction
+                if correction.accepted:
+                    out['var_s'] = max(out['var_s'], correction.variance
+                                       + self.p.sigma_u**2 * abs(self.travel-correction.anchor))
             out['traction_gain'] = getattr(self.model, 'traction_gain', 1.0)
             alternatives = []
             for spur, fork, length in self.route_alternatives:
