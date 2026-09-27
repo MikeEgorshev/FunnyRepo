@@ -83,6 +83,7 @@ def test_time_jump_back_resets_and_old_samples_are_dropped():
     est.wheel('front', 100.1, 36.0)
     v = est.state().v
     est.wheel('front', 99.5, 0.0)                # опоздал на 0,6 с: отбрасываем
+    est.wheel('rear', 98.9, 0.0)                 # задняя на 1,2 с позади (так бывает в начале прогона)
     assert est.state().v == v and est.resets == 0
     est.wheel('front', 10.0, 0.0)                # новый прогон
     assert est.resets == 1 and est.state().t == 10.0
@@ -130,3 +131,26 @@ def test_state_at_predicts_without_moving_the_filter():
     assert est.t == 0.0 and ahead.t == 0.4 and ahead.s > 3.9
     est.wheel('front', 0.1, 36.0)                # не считается опоздавшим
     assert est.t == 0.1
+
+
+def test_disturbance_does_not_carry_over_a_stop_into_the_next_start():
+    est = Estimator()
+    t = 0.0
+    for _ in range(100):                          # торможение сильнее модели: d уходит в минус
+        t += 0.1
+        est.set_notch(t, 0)
+        v = max(0.0, 8.0 - 1.2 * t)
+        est.wheel('front', t, v * 3.5966)
+        est.wheel('rear', t + 0.005, v * 3.5966)
+    for _ in range(30):                           # стоянка
+        t += 0.1
+        est.set_notch(t, -2)
+        est.wheel('front', t, 0.0)
+        est.wheel('rear', t + 0.005, 0.0)
+    t0 = t
+    for _ in range(40):                           # трогание: 1 м/с², обе тележки согласны
+        t += 0.1
+        est.set_notch(t, 8)
+        est.wheel('front', t, (t - t0) * 3.5966)
+        est.wheel('rear', t + 0.005, (t - t0) * 3.5966)
+    assert abs(est.state().v - (t - t0)) < 0.3 and not est.state().slip

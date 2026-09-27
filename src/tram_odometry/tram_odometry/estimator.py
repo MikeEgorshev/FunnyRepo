@@ -41,10 +41,15 @@ class FilterParams:
     r_zupt: float = 0.02        # м/с
     step_s: float = 0.05        # с, шаг интегрирования прогноза
     max_gap_s: float = 120.0    # с, больший скачок времени вперёд — сброс (новый прогон)
-    reset_back_s: float = 1.0   # с, скачок времени назад больше — сброс (новый прогон)
+    reset_back_s: float = 10.0  # с, скачок времени назад больше — сброс (новый прогон); меньше — отсчёт
+                                # отбрасывается: в начале прогона тележка бывает на 1,1 с позади остальных
     max_lag_s: float = 0.25     # с, отсчёт старее текущего времени — отбрасывается
     k_min_dist_m: float = 200.0  # м, короче между привязками — k не уточняем
     k_max_rel: float = 0.03     # k не уходит от k0 дальше этой доли
+    trust_agreeing: bool = True  # обе тележки свежие, согласны и без флагов — без χ²-отсева: на настоящих
+                                 # данных трамвай тормозит и при ручке в нейтрали, и модель этого не видит
+    agree_abs: float = 0.15     # м/с, согласие тележек для доверия
+    agree_rel: float = 0.015    # доля скорости
 
 
 @dataclass
@@ -231,6 +236,7 @@ class Estimator:
         self.slip_ratio = (sum(raw) / len(raw) - x[V]) / max(x[V], 0.5) if raw else 0.0
         if raw and max(raw) < p.zupt_speed and self.notch <= 0 and x[V] < p.zupt_max_est:
             self._update([0.0, 1.0, 0.0, 0.0], 0.0, x[V], p.r_zupt ** 2, frozen=(K,))
+            self._release_disturbance()
             self._reject_since = None
             self._rejects = 0
             self.slip = self.flags.any
@@ -242,7 +248,9 @@ class Estimator:
         z = z_mps * x[K]
         H = [0.0, x[K], 0.0, 0.0]
         h = x[K] * x[V]
-        rejected = self._nis(H, z, h, p.r_wheel ** 2) > p.gate
+        agree = (p.trust_agreeing and front is not None and rear is not None and not self.flags.any
+                 and abs(front - rear) <= max(p.agree_abs, p.agree_rel * max(front, rear)))
+        rejected = not agree and self._nis(H, z, h, p.r_wheel ** 2) > p.gate
         if not rejected:
             self._update(H, z, h, p.r_wheel ** 2, frozen=(K,))
             self._reject_since = None
@@ -254,6 +262,15 @@ class Estimator:
             if t - self._reject_since > p.reject_max_s:
                 self._update(H, z, h, p.r_recover ** 2, frozen=(K,))
         self.slip = self._rejects >= p.flag_after or self.flags.any
+
+    def _release_disturbance(self):
+        """На стоянке возмущение d не наблюдается (тормоз держит, v = 0) и не должно переходить
+        в следующий разгон: накопленное на торможении d = −0,6 м/с² съедало тягу, модель
+        предсказывала v = 0, и χ² отбрасывал все колёса трогания (найдено на прогоне 30618_88aea4d9)."""
+        self.x[D] = 0.0
+        for i in range(N):
+            self.P[D][i] = self.P[i][D] = 0.0
+        self.P[D][D] = 0.05 ** 2
 
     def _scale_var(self):
         """Вклад неопределённости k в дисперсию s: ошибка масштаба растёт с путём."""

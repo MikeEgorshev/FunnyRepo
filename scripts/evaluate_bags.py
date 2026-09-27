@@ -37,6 +37,7 @@ FRONT, REAR = '/vehicle/front_bogie_velocity', '/vehicle/rear_bogie_velocity'
 CMD = '/vehicle/driver_position_cmd'
 MASTER, ROVER = '/sensing/gnss/master/fix', '/sensing/gnss/rover/fix'
 MASTER_VEL = '/sensing/gnss/master/vel'
+KIN = '/localization/kinematic_state'     # эталон судьи (есть в проверочных прогонах)
 MSG_DEFS = {
     'tram_vehicle_msgs/msg/VelocitySensor': 'std_msgs/Header header\nfloat64 velocity\n',
     'tram_vehicle_msgs/msg/DriverControllerCommand': 'std_msgs/Header header\nint8 position\n',
@@ -60,7 +61,7 @@ def _stamp(msg):
 
 def read_bag(path):
     """[(время записи, топик, сообщение)] по возрастанию времени записи."""
-    topics = {FRONT, REAR, CMD, MASTER, ROVER, MASTER_VEL}
+    topics = {FRONT, REAR, CMD, MASTER, ROVER, MASTER_VEL, KIN}
     out = []
     with AnyReader([Path(path)], default_typestore=typestore()) as reader:
         conns = [c for c in reader.connections if c.topic in topics]
@@ -71,7 +72,13 @@ def read_bag(path):
 
 
 def reference(events, frame=MgrsLocal()):
-    """Эталон: [(метка, x, y, z)] base_link и [(метка, скорость)]."""
+    """Эталон: [(метка, x, y, z)] base_link и [(метка, скорость)]. Есть /localization/kinematic_state —
+    берётся он, как у судьи: pose.pose.position и twist.twist.linear.x. Нет — по двум антеннам GNSS."""
+    kin = [(_stamp(m), m) for _, topic, m in events if topic == KIN]
+    if kin:
+        pos = [(t, m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z) for t, m in kin]
+        vel = [(t, m.twist.twist.linear.x) for t, m in kin]
+        return sorted(pos), sorted(vel)
     rover = sorted((_stamp(m), frame.forward(m.latitude, m.longitude, m.altitude))
                    for _, topic, m in events if topic == ROVER and m.status.status >= 0)
     rover_t = [r[0] for r in rover]
@@ -162,6 +169,7 @@ def metrics(out, ref_pos, ref_vel):
             res['v_rmse'] = math.sqrt(sum(e * e for e in ev) / len(ev))
             res['v_mae'] = sum(abs(e) for e in ev) / len(ev)
             res['v_bias'] = sum(ev) / len(ev)
+            res['v_max'] = max(abs(e) for e in ev)
     mapped = [(t, x, y, z) for t, x, y, z in ref_pos]
     pairs = [(r, out[j]) for r in mapped if (j := _nearest(times, r[0])) is not None and out[j][6] == 'map']
     if pairs:
@@ -171,7 +179,9 @@ def metrics(out, ref_pos, ref_vel):
         res.update(p3d_mean=sum(e3) / len(e3), p3d_rmse=math.sqrt(sum(e * e for e in e3) / len(e3)),
                    p3d_max=max(e3), p3d_final=e3[-1], along_rmse=math.sqrt(sum(a * a for a in along) / len(along)),
                    z_rmse=math.sqrt(sum((o[4] - r[3]) ** 2 for r, o in pairs) / len(pairs)), dist_m=dist,
-                   drift_pct=100.0 * e3[-1] / dist if dist > 0 else float('nan'))
+                   drift_pct=100.0 * e3[-1] / dist if dist > 0 else float('nan'),
+                   **{f'{a}_rmse': math.sqrt(sum((o[2 + k] - r[1 + k]) ** 2 for r, o in pairs) / len(pairs))
+                      for k, a in enumerate('xy')})
     return res
 
 

@@ -58,10 +58,13 @@ tram_odometry:
       r_zupt: 0.02
       step_s: 0.05
       max_gap_s: 120.0
-      reset_back_s: 1.0
+      reset_back_s: 10.0           # с, меньший скачок назад — опоздавший отсчёт, а не новый прогон
       max_lag_s: 0.25
       k_min_dist_m: 200.0          # м между привязками, чтобы уточнять k
       k_max_rel: 0.03              # k не уходит от k0 дальше 3 %
+      trust_agreeing: true         # согласные тележки без флагов — без χ²-отсева
+      agree_abs: 0.15              # м/с
+      agree_rel: 0.015
 
     stops:
       dwell_s: 5.0                 # с, стоянка короче — привязки нет
