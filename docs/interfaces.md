@@ -10,6 +10,7 @@
 | `/vehicle/rear_bogie_velocity` | `tram_vehicle_msgs/msg/VelocitySensor` | 10 Гц | то же для задней тележки |
 | `/vehicle/driver_position_cmd` | `tram_vehicle_msgs/msg/DriverControllerCommand` | 20 Гц | `position` (int8): 0 — нейтраль, +1…+15 — тяга, −1…−15 — торможение |
 | `/sensing/gnss/master/fix` | `sensor_msgs/msg/NavSatFix` | 10 Гц | **только начальная выставка** в первые секунды прогона; после инициализации нода топик игнорирует |
+| `primary_topic` (по умолчанию `/localization/kinematic_state`) | `nav_msgs/msg/Odometry` | как у основного вычислителя | **только при `primary_sync: true`, в эксплуатации**: положение `base_link` основного вычислителя в сетке MGRS (`frame_id: map`). Пока есть GNSS (фикс master не старше 1 с), поправляет резервный: путь, ветку у конечной, направление. По умолчанию выключено: на проверке этот топик — эталон судьи |
 
 Остальные GNSS-топики нода не читает. GNSS нужен только для офлайн-калибровки и метрик. Использовать GNSS, IMU, лидар или камеры в основном контуре — дисквалификация.
 
@@ -52,6 +53,8 @@ QoS подписок — best effort, `depth: 10`: совместимо с из�
 | `model_params_file` | `config/model.yaml` | параметры тяги, торможения и сопротивления |
 | `gnss_init_timeout_s` | 5.0 | сколько секунд ждём GNSS для выставки; нет GNSS — старт с начала карты или с `initial_s` |
 | `initial_s` | `-1` | ручная стартовая дистанция по карте; `-1` — не задана |
+| `primary_sync` | `false` | поправка от основного вычислителя, пока есть GNSS; на проверке не включать |
+| `primary_topic` | `/localization/kinematic_state` | топик положения основного вычислителя для `primary_sync` |
 | пороги проскальзывания, шумы фильтра | см. файл | описаны в `config/tram_odometry.yaml` |
 
 ## Внутренние модули (чтобы работать параллельно)
